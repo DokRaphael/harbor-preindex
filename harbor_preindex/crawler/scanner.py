@@ -68,6 +68,20 @@ class ProjectCrawler:
 
         return discovered, visited_directories
 
+    def list_project_files(self, project: DiscoveredProject) -> list[Path]:
+        """Return supported files directly contained in a discovered project folder."""
+
+        return self.list_supported_files(project.path)
+
+    def list_supported_files(self, directory: Path) -> list[Path]:
+        """Return supported files directly contained in a directory."""
+
+        return sorted(
+            path
+            for path in directory.iterdir()
+            if path.is_file() and not path.name.startswith(".") and self._is_supported(path.name)
+        )
+
     def _is_supported(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in self.supported_extensions
 

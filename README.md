@@ -47,7 +47,7 @@ It is a focused **pre-indexing and folder suggestion layer**.
 Version 1 is intentionally narrow and practical:
 
 - document-focused only
-- one project folder = one main point in the vector index
+- two retrieval levels: existing folder index plus a lightweight file index
 - local crawl of an already-mounted storage root
 - embeddings and LLM decision via configurable Ollama HTTP backends
 - local Qdrant storage
@@ -80,6 +80,19 @@ In practice, the workflow looks like this:
 
 Only a document extractor is implemented today, but the architecture is designed so image, audio, or video extractors can be added later without changing the retrieval and decision core.
 
+The retrieval core now also supports plain text search such as:
+
+- `where is my resume?`
+- `where are my Amazon invoices?`
+- `find the Neuraloop docs`
+
+This text query path uses a simple hybrid search:
+
+1. search the existing folder-level index
+2. search a new file-level index
+3. merge both result sets
+4. return a stable JSON response with `match_type`, `confidence`, and `needs_review`
+
 ---
 
 ## Why this project exists
@@ -106,8 +119,9 @@ It is about **preparing a filesystem for semantic retrieval and assisted organiz
 * crawl a local storage root
 * detect project folders with a simple heuristic
 * build a lightweight text profile per folder
+* build a lightweight semantic card per supported file
 * generate embeddings in batches
-* store the index locally in Qdrant
+* store folder and file indexes locally in Qdrant
 
 ### Querying a new file
 
@@ -116,6 +130,14 @@ It is about **preparing a filesystem for semantic retrieval and assisted organiz
 * auto-select when confidence is high enough
 * use a compact LLM rerank step when confidence is borderline
 * fall back to `review_needed` when ambiguity remains
+
+### Querying the retrieval core
+
+* embed a plain text query
+* retrieve top-k candidate files
+* retrieve top-k candidate folders
+* merge both lists without requiring an LLM
+* return a stable JSON response for higher-level Harbor consumers
 
 ### Local persistence
 
@@ -200,6 +222,7 @@ mkdir -p ./data/storage-root
 harbor-preindex health-check
 harbor-preindex build-index
 harbor-preindex query-file /tmp/incoming/contract_dupont.pdf
+harbor-preindex query "where is my resume?"
 ```
 
 If you use the default models from `.env.example`, make sure Ollama is running locally and that these models are available:
@@ -237,6 +260,7 @@ EMBEDDING_BATCH_SIZE=16
 
 QDRANT_MODE=local
 QDRANT_COLLECTION=projects
+QDRANT_FILE_COLLECTION=files
 QDRANT_PATH=./data/runtime/qdrant
 
 TOP_K=5
@@ -273,7 +297,9 @@ Example output:
 ```json
 {
   "collection": "projects",
+  "file_collection": "files",
   "generated_at": "2026-04-06T00:00:00Z",
+  "indexed_files": 214,
   "indexed_projects": 42,
   "recreated_collection": false,
   "root_path": "/data/storage-root",
@@ -291,6 +317,42 @@ harbor-preindex rescan
 
 ```bash
 harbor-preindex query-file /tmp/incoming/contract_dupont.pdf
+```
+
+### Query the retrieval core
+
+```bash
+harbor-preindex query "where is my resume?"
+```
+
+Example output:
+
+```json
+{
+  "query": "where is my resume?",
+  "match_type": "likely_file",
+  "confidence": 0.87,
+  "needs_review": false,
+  "matches": [
+    {
+      "target_kind": "file",
+      "target_id": "f8d4b5a2-56ad-51fb-bb21-90d72884e8f5",
+      "path": "/data/storage-root/admin/cv/Raphael_Dok_CV.txt",
+      "score": 0.91,
+      "label": "Raphael_Dok_CV.txt",
+      "why": "filename and extracted text strongly match query"
+    },
+    {
+      "target_kind": "folder",
+      "target_id": "admin_cv",
+      "path": "/data/storage-root/admin/cv",
+      "score": 0.78,
+      "label": "admin/cv",
+      "why": "folder path and sample filenames match query"
+    }
+  ],
+  "generated_at": "2026-04-06T00:00:00Z"
+}
 ```
 
 ### Optional debug mode
@@ -357,6 +419,16 @@ Each project folder is stored as one point in the `projects` collection, with me
 
 The internal Qdrant `point.id` is a deterministic UUID derived from the folder path, so it remains stable across rescans.
 
+Supported files are also stored as one point per file in the `files` collection, with metadata such as:
+
+* `file_id`
+* `path`
+* `filename`
+* `extension`
+* `parent_path`
+* `modality`
+* `text_for_embedding`
+
 This keeps deployment simple while remaining compatible with a future move to remote Qdrant.
 
 ---
@@ -400,6 +472,7 @@ In practice, the decision `mode` can be `auto_top1`, `llm_rerank`, or `review_ne
 By default, runtime data is created under `HARBOR_DATA_DIR`:
 
 * `results/` — query outputs and indexing summaries
+* `results/` also stores retrieval query outputs from `harbor-preindex query`
 * `harbor-preindex.sqlite3` — local run audit trail
 * `qdrant/` — local vector storage
 
@@ -412,6 +485,7 @@ Application logs are structured as JSON on `stderr`, which makes them easy to in
 Simple wrappers are provided in:
 
 * `scripts/build-index.sh`
+* `scripts/query.sh`
 * `scripts/query-file.sh`
 * `scripts/health-check.sh`
 
@@ -426,8 +500,8 @@ A sample `systemd` unit is also provided:
 Version 1 makes deliberately simple choices:
 
 * project folder detection uses a lightweight heuristic
-* semantic profiles are compact
-* the main index is folder-based, not file-based
+* semantic profiles and file cards are compact
+* file-level retrieval is intentionally lightweight and does not yet do OCR or chunk-level search
 * no OCR
 * no image, audio, or video extraction yet
 * no HTTP API
