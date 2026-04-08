@@ -1,0 +1,44 @@
+# Environment
+.env
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data
+data/
+logs/
+*.sqlite3
+*.db
+
+# Packaging artifacts
+*.egg-info/
+build/
+dist/
+
+# Qdrant local artifacts
+storage.sqlite
+storage.dbm
+meta.json
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+README_perso.md

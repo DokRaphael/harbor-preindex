@@ -1,0 +1,15 @@
+[Unit]
+Description=Harbor Preindex Build Index
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/harbor-preindex
+EnvironmentFile=/opt/harbor-preindex/.env
+ExecStart=/opt/harbor-preindex/.venv/bin/harbor-preindex build-index
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
