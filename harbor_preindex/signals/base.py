@@ -11,6 +11,11 @@ from harbor_preindex.signals.models import ExtractedSignal
 class SignalExtractor(ABC):
     """Base interface for extracting a signal from a file."""
 
+    def supported_suffixes(self) -> tuple[str, ...]:
+        """Return the file suffixes handled by this extractor when known."""
+
+        return ()
+
     @abstractmethod
     def supports(self, file_path: Path) -> bool:
         """Return whether this extractor can handle the given file."""

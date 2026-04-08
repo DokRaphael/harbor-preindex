@@ -27,6 +27,9 @@ class DocumentSignalExtractor(SignalExtractor):
     def supports(self, file_path: Path) -> bool:
         return file_path.suffix.lower() in self.supported_extensions
 
+    def supported_suffixes(self) -> tuple[str, ...]:
+        return tuple(sorted(self.supported_extensions))
+
     def extract(self, file_path: Path) -> ExtractedSignal:
         if not self.supports(file_path):
             raise ValueError(f"unsupported document signal for file: {file_path}")

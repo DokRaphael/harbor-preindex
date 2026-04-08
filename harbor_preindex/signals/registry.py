@@ -20,4 +20,17 @@ class SignalExtractorRegistry:
         for extractor in self.extractors:
             if extractor.supports(file_path):
                 return extractor
-        raise ValueError(f"no SignalExtractor available for file: {file_path}")
+
+        suffix = file_path.suffix.lower() or "[no extension]"
+        supported_suffixes = sorted(
+            {
+                supported_suffix
+                for extractor in self.extractors
+                for supported_suffix in extractor.supported_suffixes()
+            }
+        )
+        supported_display = ", ".join(supported_suffixes) if supported_suffixes else "unknown"
+        raise ValueError(
+            f"unsupported file type {suffix!r} for file: {file_path}. "
+            f"Supported extensions: {supported_display}"
+        )

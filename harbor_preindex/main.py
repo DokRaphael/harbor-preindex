@@ -276,17 +276,17 @@ class HarborPreindexApp:
             raise FileNotFoundError(f"input file does not exist: {file_path}")
         if not file_path.is_file():
             raise ValueError(f"input path is not a file: {file_path}")
-        if not self.vector_store.collection_exists():
-            raise RuntimeError(
-                f"Qdrant collection '{self.settings.qdrant_collection}' does not exist; "
-                "run `build-index` first"
-            )
 
         limit = top_k if top_k is not None else self.settings.top_k
         if limit <= 0:
             raise ValueError("top_k must be greater than zero")
 
         signal_extractor = self.signal_registry.resolve(file_path)
+        if not self.vector_store.collection_exists():
+            raise RuntimeError(
+                f"Qdrant collection '{self.settings.qdrant_collection}' does not exist; "
+                "run `build-index` first"
+            )
         signal = signal_extractor.extract(file_path)
         query_context = self.profile_builder.build_query_context_from_signal(file_path, signal)
         embedding = self.embedding_backend.embed_text(signal.text_for_embedding)
