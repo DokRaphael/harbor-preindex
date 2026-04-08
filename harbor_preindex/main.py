@@ -37,6 +37,7 @@ from harbor_preindex.storage import (
     QdrantFileStore,
     QdrantProjectStore,
     SQLiteAuditStore,
+    create_local_qdrant_client,
 )
 from harbor_preindex.utils.iterables import chunked
 from harbor_preindex.utils.ollama_api import OllamaApiClient, OllamaApiError
@@ -104,15 +105,18 @@ class HarborPreindexApp:
         )
         embedding_backend = OllamaEmbeddingBackend(ollama_client, settings.embedding_model)
         llm_backend = OllamaLLMBackend(ollama_client, settings.llm_model)
+        qdrant_client = create_local_qdrant_client(settings.qdrant_path)
         vector_store = QdrantProjectStore(
             settings.qdrant_mode,
             settings.qdrant_path,
             settings.qdrant_collection,
+            client=qdrant_client,
         )
         file_vector_store = QdrantFileStore(
             settings.qdrant_mode,
             settings.qdrant_path,
             settings.qdrant_file_collection,
+            client=qdrant_client,
         )
         retriever = ProjectRetriever(vector_store)
         file_retriever = FileCardRetriever(file_vector_store)

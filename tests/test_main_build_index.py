@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -71,6 +72,7 @@ def _install_dependency_stubs() -> None:
 _install_dependency_stubs()
 
 from harbor_preindex.main import HarborPreindexApp
+from harbor_preindex.settings import Settings
 from harbor_preindex.schemas import DiscoveredProject, FileCard, ProjectProfile
 
 
@@ -164,6 +166,51 @@ class StubAuditStore:
 
 
 class BuildIndexBestEffortTests(unittest.TestCase):
+    def test_from_settings_shares_one_local_qdrant_client_between_stores(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            settings = Settings(
+                app_name="harbor-preindex",
+                orchestrator_node="localhost",
+                log_level="INFO",
+                harbor_root=base_dir / "storage-root",
+                harbor_data_dir=base_dir / "runtime",
+                results_dir=base_dir / "runtime" / "results",
+                logs_dir=base_dir / "runtime" / "logs",
+                sqlite_path=base_dir / "runtime" / "harbor-preindex.sqlite3",
+                qdrant_mode="local",
+                qdrant_path=base_dir / "runtime" / "qdrant",
+                qdrant_collection="projects",
+                qdrant_file_collection="files",
+                top_k=5,
+                sample_files_per_directory=5,
+                max_text_snippet_chars=1200,
+                max_profile_chars=4000,
+                supported_extensions=(".txt", ".md", ".pdf"),
+                excluded_path_segments=(".git", "__pycache__"),
+                ollama_base_url="http://localhost:11434",
+                ollama_api_key=None,
+                embedding_model="embeddinggemma",
+                llm_model="qwen2.5:7b-instruct",
+                ollama_timeout_seconds=30.0,
+                ollama_max_retries=0,
+                embedding_batch_size=8,
+                auto_accept_score=0.9,
+                auto_accept_score_gap=0.12,
+                llm_max_candidates=5,
+            )
+            shared_client = object()
+
+            with patch(
+                "harbor_preindex.main.create_local_qdrant_client",
+                return_value=shared_client,
+            ) as create_client:
+                app = HarborPreindexApp.from_settings(settings)
+
+        create_client.assert_called_once_with(settings.qdrant_path)
+        self.assertIs(app.vector_store._client_instance(), shared_client)
+        self.assertIs(app.file_vector_store._client_instance(), shared_client)
+
     def test_broken_file_card_is_skipped_without_failing_build_index(self) -> None:
         project = DiscoveredProject(
             path=Path("/tmp/storage-root/admin/docs"),

@@ -21,13 +21,19 @@ from harbor_preindex.utils.qdrant_ids import make_qdrant_point_id
 class QdrantProjectStore:
     """Persist project folder embeddings in local Qdrant."""
 
-    def __init__(self, mode: str, path: Path, collection_name: str) -> None:
+    def __init__(
+        self,
+        mode: str,
+        path: Path,
+        collection_name: str,
+        client: QdrantClient | None = None,
+    ) -> None:
         if mode != "local":
             raise ValueError(f"unsupported qdrant mode: {mode}")
         self.mode = mode
         self.path = path
         self.collection_name = collection_name
-        self._client: QdrantClient | None = None
+        self._client = client
 
     def ensure_collection(self, vector_size: int, recreate: bool = False) -> None:
         client = self._client_instance()
@@ -144,13 +150,19 @@ class QdrantProjectStore:
 class QdrantFileStore:
     """Persist file card embeddings in local Qdrant."""
 
-    def __init__(self, mode: str, path: Path, collection_name: str) -> None:
+    def __init__(
+        self,
+        mode: str,
+        path: Path,
+        collection_name: str,
+        client: QdrantClient | None = None,
+    ) -> None:
         if mode != "local":
             raise ValueError(f"unsupported qdrant mode: {mode}")
         self.mode = mode
         self.path = path
         self.collection_name = collection_name
-        self._client: QdrantClient | None = None
+        self._client = client
 
     def ensure_collection(self, vector_size: int, recreate: bool = False) -> None:
         client = self._client_instance()
@@ -282,3 +294,10 @@ def _query_response_points(response: Any) -> list[Any]:
     if isinstance(response, list):
         return response
     raise RuntimeError("unexpected Qdrant query response shape")
+
+
+def create_local_qdrant_client(path: Path) -> QdrantClient:
+    """Create a single local Qdrant client for a storage directory."""
+
+    path.mkdir(parents=True, exist_ok=True)
+    return QdrantClient(path=str(path))
