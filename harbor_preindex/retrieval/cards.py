@@ -72,10 +72,12 @@ class RetrievalCardBuilder:
         relative_path = relative_display(file_path, self.root_path)
         excerpt = str(signal.metadata.get("text_excerpt", "")).strip()
         readable_stem = _readable_stem(file_path.stem)
+        filename_terms = _semantic_filename_terms(file_path.stem)
         semantic_hints = enriched_signal.semantic_hints
         parts = _file_card_parts(
             file_path=file_path,
             readable_stem=readable_stem,
+            filename_terms=filename_terms,
             relative_parent=relative_parent,
             relative_path=relative_path,
             semantic_hints=semantic_hints,
@@ -92,6 +94,7 @@ class RetrievalCardBuilder:
             metadata={
                 "relative_path": relative_path,
                 "relative_parent_path": relative_parent,
+                "filename_terms": filename_terms,
                 "text_excerpt": excerpt,
                 "signal_confidence": signal.confidence,
                 "semantic_hints": semantic_hints.to_dict(),
@@ -112,9 +115,63 @@ def _readable_stem(value: str) -> str:
     return cleaned or value
 
 
+def _semantic_filename_terms(value: str) -> list[str]:
+    raw_chunks = [chunk for chunk in re.split(r"[_\-.]+", value.strip()) if chunk]
+    terms: list[str] = []
+    for chunk in raw_chunks:
+        for segment in _camel_case_segments(chunk):
+            terms.extend(_compound_filename_segments(segment))
+    return _compact_terms(terms, limit=8)
+
+
+def _camel_case_segments(value: str) -> list[str]:
+    prepared = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", value)
+    prepared = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", prepared)
+    return [segment for segment in prepared.split() if segment]
+
+
+def _compound_filename_segments(value: str) -> list[str]:
+    if not value:
+        return []
+
+    alnum_suffix_match = re.match(r"^([A-Za-z]+(?:\d+)+)([A-Za-z]{3,})$", value)
+    if alnum_suffix_match:
+        return [alnum_suffix_match.group(1), alnum_suffix_match.group(2)]
+
+    year_suffix_match = re.match(r"^([A-Za-z]{3,})(19\d{2}|20\d{2})$", value)
+    if year_suffix_match:
+        return [year_suffix_match.group(1), year_suffix_match.group(2)]
+
+    year_prefix_match = re.match(r"^(19\d{2}|20\d{2})([A-Za-z]{3,})$", value)
+    if year_prefix_match:
+        return [year_prefix_match.group(1), year_prefix_match.group(2)]
+
+    return [value]
+
+
+def _compact_terms(values: list[str], limit: int) -> list[str]:
+    compacted: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        if len(cleaned) < 2 and not cleaned.isdigit():
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        compacted.append(cleaned)
+        if len(compacted) >= limit:
+            break
+    return compacted
+
+
 def _file_card_parts(
     file_path: Path,
     readable_stem: str,
+    filename_terms: list[str],
     relative_parent: str,
     relative_path: str,
     semantic_hints: SemanticHints,
@@ -127,6 +184,8 @@ def _file_card_parts(
         f"Parent path: {relative_parent}",
         f"Relative file path: {relative_path}",
     ]
+    if filename_terms:
+        parts.append("Filename terms: " + ", ".join(filename_terms))
     if semantic_hints.language_hint:
         parts.append(f"Language hint: {semantic_hints.language_hint}")
     if semantic_hints.kind_hints:

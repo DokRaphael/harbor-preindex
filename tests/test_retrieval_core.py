@@ -216,6 +216,45 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         self.assertIn("amazon", match.evidence.source_terms["filename"])
         self.assertIn("2025", match.evidence.source_terms["semantic_hints"])
 
+    def test_filename_segments_help_explain_compound_document_names(self) -> None:
+        core = HybridRetrievalCore(
+            folder_retriever=StubFolderRetriever([]),
+            file_retriever=StubFileRetriever(
+                [
+                    FileSearchCandidate(
+                        file_id="file-compound",
+                        path="/tmp/storage-root/admin/factures/ESP8266amazon.pdf",
+                        filename="ESP8266amazon.pdf",
+                        extension=".pdf",
+                        parent_path="/tmp/storage-root/admin/factures",
+                        modality="document",
+                        score=0.83,
+                        text_for_embedding="Amazon invoice for ESP8266 order",
+                        metadata={
+                            "filename_terms": ["ESP8266", "amazon"],
+                            "text_excerpt": "Amazon invoice for an ESP8266 order",
+                            "functional_summary": "Transactional document mentioning Amazon.",
+                            "semantic_hints": {
+                                "kind_hints": ["transactional_document"],
+                                "topic_hints": ["amazon", "invoice"],
+                                "entity_candidates": ["Amazon"],
+                                "time_hints": [],
+                            },
+                        },
+                    )
+                ]
+            ),
+            card_builder=StubCardBuilder(),
+        )
+
+        response = core.retrieve(RetrievalQuery(text="amazon invoice", limit=5), [0.1, 0.2])
+
+        match = response.matches[0]
+        self.assertEqual(match.why, "matched query terms in filename and semantic summary")
+        assert match.evidence is not None
+        self.assertIn("filename", match.evidence.matched_sources)
+        self.assertIn("amazon", match.evidence.source_terms["filename"])
+
     def test_query_hints_lightly_rerank_results_without_hard_filtering(self) -> None:
         core = HybridRetrievalCore(
             folder_retriever=StubFolderRetriever(

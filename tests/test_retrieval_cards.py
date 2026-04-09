@@ -79,6 +79,16 @@ class RetrievalCardBuilderTests(unittest.TestCase):
         self.assertEqual(card.metadata["doc_count"], 1)
         self.assertEqual(card.metadata["sample_filenames"], ["Raphael_Dok_CV.txt"])
 
+    def test_build_file_card_extracts_semantic_filename_terms_for_compound_stems(self) -> None:
+        file_path = self.root_path / "admin" / "factures" / "ESP8266amazon.txt"
+
+        card = self.builder.build_file_card(file_path)
+
+        self.assertEqual(card.metadata["filename_terms"], ["ESP8266", "amazon"])
+        self.assertIn("Filename terms: ESP8266, amazon", card.text_for_embedding)
+        self.assertIn("Entity candidates:", card.text_for_embedding)
+        self.assertLessEqual(len(card.text_for_embedding), 600)
+
 
 if __name__ == "__main__":
     unittest.main()
