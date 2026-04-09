@@ -83,7 +83,7 @@ In practice, the workflow looks like this:
 
 1. scan the storage root
 2. detect candidate project folders
-3. build a lightweight semantic profile for each folder
+3. build a lightweight semantic profile for each folder, including a compact folder semantic signature
 4. generate embeddings for those profiles
 5. store them in local Qdrant
 6. extract a signal from a new incoming file
@@ -153,6 +153,7 @@ It is about **preparing a filesystem for semantic retrieval and assisted organiz
 * crawl a local storage root
 * detect project folders with a simple heuristic
 * build a lightweight text profile per folder
+* build a compact folder semantic signature from sampled child files, extensions, and dominant semantic hints
 * build a lightweight semantic card per supported file
 * enrich file signals with semantic hints before building file cards
 * generate embeddings in batches
@@ -426,6 +427,7 @@ This adds extra fields such as:
 
 * per-file extracted query profiles
 * candidate folder `text_profile` values for each processed file
+* candidate folder semantic signature fields such as `folder_role`, dominant hints, and discriminative terms
 
 ---
 

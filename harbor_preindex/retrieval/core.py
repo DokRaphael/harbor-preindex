@@ -9,6 +9,10 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from harbor_preindex.retrieval.cards import RetrievalCardBuilder
+from harbor_preindex.retrieval.folder_semantics import (
+    folder_signature_alignment,
+    rerank_folder_candidates,
+)
 from harbor_preindex.retrieval.query_hints import QueryHintExtractor
 from harbor_preindex.schemas import (
     FileSearchCandidate,
@@ -125,7 +129,11 @@ class HybridRetrievalCore:
             if self.file_retriever is not None
             else []
         )
-        folder_candidates = self.folder_retriever.retrieve(query_vector, query.limit)
+        folder_candidates = rerank_folder_candidates(
+            query.text,
+            query_hints,
+            self.folder_retriever.retrieve(query_vector, query.limit),
+        )
 
         file_matches = self._build_file_matches(query.text, query_hints, file_candidates)
         folder_matches = self._build_folder_matches(query.text, query_hints, folder_candidates)
@@ -560,6 +568,7 @@ class HybridRetrievalCore:
             [label, candidate.path, candidate.text_profile, *candidate.sample_filenames],
         )
         technical_hint_matches = _matched_hint_values(query_hints.technical_hints, topic_hint_matches)
+        signature_alignment = folder_signature_alignment(query_text, query_hints, candidate)
 
         _add_source_terms(source_terms, "folder_path", folder_path_terms)
         _add_source_terms(source_terms, "folder_profile", folder_profile_terms)
@@ -568,6 +577,19 @@ class HybridRetrievalCore:
             source_terms,
             "query_hints",
             [*entity_hint_terms, *time_hint_matches, *topic_hint_matches],
+        )
+        _add_source_terms(
+            source_terms,
+            "folder_signature",
+            [
+                *signature_alignment.matched_discriminative_terms,
+                *signature_alignment.matched_representative_terms,
+                *signature_alignment.matched_topic_hints,
+                *signature_alignment.matched_entity_candidates,
+                *signature_alignment.matched_time_hints,
+                *signature_alignment.matched_kind_hints,
+                *signature_alignment.matched_technical_hints,
+            ],
         )
 
         specific_document_query = _is_specific_document_query(query_hints)
@@ -580,15 +602,35 @@ class HybridRetrievalCore:
             entity_matches=entity_hint_terms,
             time_matches=time_hint_matches,
         )
+        matched_topic_values = _compact_list(
+            [*topic_hint_matches, *signature_alignment.matched_topic_hints],
+            limit=4,
+        )
+        matched_entity_values = _compact_list(
+            [*entity_hint_terms, *signature_alignment.matched_entity_candidates],
+            limit=4,
+        )
+        matched_time_values = _compact_list(
+            [*time_hint_matches, *signature_alignment.matched_time_hints],
+            limit=4,
+        )
+        matched_technical_values = _compact_list(
+            [*technical_hint_matches, *signature_alignment.matched_technical_hints],
+            limit=4,
+        )
         evidence = RetrievalEvidence(
             matched_query_terms=_compact_list(
                 [
                     *folder_path_terms,
                     *folder_profile_terms,
                     *sample_terms,
-                    *entity_hint_terms,
-                    *time_hint_matches,
-                    *topic_hint_matches,
+                    *matched_entity_values,
+                    *matched_time_values,
+                    *matched_topic_values,
+                    *signature_alignment.matched_discriminative_terms,
+                    *signature_alignment.matched_representative_terms,
+                    *signature_alignment.matched_kind_hints,
+                    *matched_technical_values,
                 ],
                 limit=8,
             ),
@@ -597,25 +639,32 @@ class HybridRetrievalCore:
             notes=_compact_list(
                 [
                     _note_from_matches("sample filenames aligned", sample_matches),
-                    _note_from_matches("entity terms aligned", entity_hint_terms),
-                    _note_from_matches("time hints aligned", time_hint_matches),
-                    _note_from_matches("topic hints aligned", topic_hint_matches),
+                    _note_from_matches("entity terms aligned", matched_entity_values),
+                    _note_from_matches("time hints aligned", matched_time_values),
+                    _note_from_matches("topic hints aligned", matched_topic_values),
+                    _note_from_matches(
+                        "discriminative folder terms aligned",
+                        signature_alignment.matched_discriminative_terms,
+                    ),
                     *hint_bonus_notes,
+                    *signature_alignment.notes,
                 ],
                 limit=6,
             ),
-            matched_entity_candidates=entity_hint_terms,
-            matched_time_hints=time_hint_matches,
-            matched_topic_hints=topic_hint_matches,
-            matched_technical_hints=technical_hint_matches,
+            matched_kind_hints=signature_alignment.matched_kind_hints,
+            matched_entity_candidates=matched_entity_values,
+            matched_time_hints=matched_time_values,
+            matched_topic_hints=matched_topic_values,
+            matched_technical_hints=matched_technical_values,
         )
         why = self._folder_why(
             folder_path_terms=folder_path_terms,
             folder_profile_terms=folder_profile_terms,
             sample_matches=sample_matches,
-            entity_matches=entity_hint_terms,
-            time_matches=time_hint_matches,
-            technical_matches=technical_hint_matches,
+            entity_matches=matched_entity_values,
+            time_matches=matched_time_values,
+            technical_matches=matched_technical_values,
+            discriminative_matches=signature_alignment.matched_discriminative_terms,
         )
         return MatchExplanation(why=why, evidence=evidence, hint_bonus=hint_bonus)
 
@@ -672,7 +721,12 @@ class HybridRetrievalCore:
         entity_matches: list[str],
         time_matches: list[str],
         technical_matches: list[str],
+        discriminative_matches: list[str],
     ) -> str:
+        if discriminative_matches and technical_matches:
+            return "folder semantic signature and technical hints align with the query"
+        if discriminative_matches and folder_profile_terms:
+            return "folder semantic signature and profile overlap with query"
         if technical_matches and folder_profile_terms:
             return "folder profile and technical hints overlap with query"
         if entity_matches and time_matches:

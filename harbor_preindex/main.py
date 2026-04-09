@@ -15,8 +15,10 @@ from harbor_preindex.embedding import OllamaEmbeddingBackend
 from harbor_preindex.llm import OllamaLLMBackend
 from harbor_preindex.logging_config import configure_logging, get_logger
 from harbor_preindex.profiling import ContentExtractor, ProjectProfileBuilder
+from harbor_preindex.profiling.folder_semantics import FolderSemanticSignatureBuilder
 from harbor_preindex.retrieval.cards import RetrievalCardBuilder
 from harbor_preindex.retrieval.core import HybridRetrievalCore
+from harbor_preindex.retrieval.folder_semantics import rerank_folder_candidates
 from harbor_preindex.retrieval.query_hints import QueryHintExtractor
 from harbor_preindex.retrieval.service import FileCardRetriever, ProjectRetriever
 from harbor_preindex.semantic import (
@@ -97,10 +99,21 @@ class HarborPreindexApp:
         configure_logging(settings.log_level)
 
         extractor = ContentExtractor(max_chars=settings.max_text_snippet_chars)
+        semantic_registry = SemanticEnricherRegistry(
+            [
+                CodeSemanticEnricher(),
+                DocumentSemanticEnricher(),
+            ]
+        )
+        folder_signature_builder = FolderSemanticSignatureBuilder(
+            semantic_registry=semantic_registry,
+            max_profile_chars=settings.max_profile_chars,
+        )
         profile_builder = ProjectProfileBuilder(
             root_path=settings.harbor_root,
             extractor=extractor,
             max_profile_chars=settings.max_profile_chars,
+            folder_signature_builder=folder_signature_builder,
         )
         signal_registry = SignalExtractorRegistry(
             [
@@ -109,12 +122,6 @@ class HarborPreindexApp:
                     supported_extensions=settings.supported_extensions,
                     max_profile_chars=settings.max_profile_chars,
                 )
-            ]
-        )
-        semantic_registry = SemanticEnricherRegistry(
-            [
-                CodeSemanticEnricher(),
-                DocumentSemanticEnricher(),
             ]
         )
         card_builder = RetrievalCardBuilder(
@@ -660,6 +667,8 @@ class HarborPreindexApp:
         query_context, signal = self._prepare_query_file(file_path)
         embedding = self.embedding_backend.embed_text(signal.text_for_embedding)
         candidates = self.retriever.retrieve(embedding, limit)
+        query_hints = self.query_hint_extractor.extract(query_context.text_profile)
+        candidates = rerank_folder_candidates(query_context.text_profile, query_hints, candidates)
         decision = self.decision_engine.decide(query_context, candidates)
 
         return (
@@ -808,7 +817,17 @@ class HarborPreindexApp:
                     "project_id": candidate.project_id,
                     "path": candidate.path,
                     "score": round(candidate.score, 4),
+                    "raw_score": round(
+                        candidate.raw_score if candidate.raw_score is not None else candidate.score,
+                        4,
+                    ),
+                    "semantic_bonus": round(candidate.semantic_bonus, 4),
                     "text_profile": candidate.text_profile,
+                    "semantic_signature": (
+                        candidate.semantic_signature.to_dict()
+                        if candidate.semantic_signature is not None
+                        else None
+                    ),
                 }
                 for candidate in result.top_candidates
             ],

@@ -72,7 +72,8 @@ def _install_dependency_stubs() -> None:
 _install_dependency_stubs()
 
 from harbor_preindex.main import HarborPreindexApp
-from harbor_preindex.schemas import Decision, FileQueryContext, SearchCandidate
+from harbor_preindex.retrieval.query_hints import QueryHintExtractor
+from harbor_preindex.schemas import Decision, FileQueryContext, FolderSemanticSignature, SearchCandidate
 from harbor_preindex.signals.models import ExtractedSignal
 
 
@@ -145,6 +146,18 @@ class StubRetriever:
                     sample_filenames=["amazon_invoice_2025.txt"],
                     doc_count=8,
                     text_profile="Amazon invoices and receipts",
+                    semantic_signature=FolderSemanticSignature(
+                        folder_role="entity_bucket",
+                        dominant_topics=["invoice", "amazon"],
+                        dominant_entities=["amazon"],
+                        dominant_time_hints=[],
+                        dominant_kinds=["transactional_document"],
+                        frequent_extensions=[".txt"],
+                        representative_terms=["amazon", "invoice", "receipt"],
+                        discriminative_terms=["amazon", "invoice"],
+                        notable_children=[],
+                        sample_filenames=["amazon_invoice_2025.txt"],
+                    ),
                 ),
                 SearchCandidate(
                     project_id="personal_misc",
@@ -289,7 +302,7 @@ class BatchQueryTests(unittest.TestCase):
             retriever=StubRetriever(),
             file_retriever=SimpleNamespace(),
             retrieval_core=SimpleNamespace(),
-            query_hint_extractor=SimpleNamespace(),
+            query_hint_extractor=QueryHintExtractor(),
             decision_engine=StubDecisionEngine(),
             result_store=self.result_store,
             audit_store=self.audit_store,
@@ -408,6 +421,7 @@ class BatchQueryTests(unittest.TestCase):
         self.assertIn("signal_modality", payload["placements"][0]["debug"])
         self.assertIn("query_text_profile", payload["placements"][0]["debug"])
         self.assertIn("candidate_text_profiles", payload["placements"][0]["debug"])
+        self.assertIn("semantic_signature", payload["placements"][0]["debug"]["candidate_text_profiles"][0])
         self.assertIn("debug", payload["review_queue"][0])
 
     def test_reviewed_items_are_not_grouped_as_classified_destinations(self) -> None:

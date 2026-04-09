@@ -42,6 +42,11 @@ class RetrievalCardBuilder:
             metadata={
                 "doc_count": profile.doc_count,
                 "sample_filenames": list(profile.sample_filenames),
+                "semantic_signature": (
+                    profile.semantic_signature.to_dict()
+                    if profile.semantic_signature is not None
+                    else None
+                ),
             },
         )
 
@@ -59,6 +64,11 @@ class RetrievalCardBuilder:
             metadata={
                 "doc_count": candidate.doc_count,
                 "sample_filenames": list(candidate.sample_filenames),
+                "semantic_signature": (
+                    candidate.semantic_signature.to_dict()
+                    if candidate.semantic_signature is not None
+                    else None
+                ),
             },
         )
 

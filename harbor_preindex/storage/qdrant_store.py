@@ -11,6 +11,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from harbor_preindex.schemas import (
     FileSearchCandidate,
+    FolderSemanticSignature,
     IndexedFileCard,
     IndexedProject,
     SearchCandidate,
@@ -106,6 +107,8 @@ class QdrantProjectStore:
                     sample_filenames=_string_list(payload.get("sample_filenames")),
                     doc_count=int(payload.get("doc_count", 0)),
                     text_profile=str(payload.get("text_profile", "")),
+                    semantic_signature=_folder_semantic_signature(payload.get("semantic_signature")),
+                    raw_score=float(item.score or 0.0),
                 )
             )
         return candidates
@@ -285,6 +288,26 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _folder_semantic_signature(value: Any) -> FolderSemanticSignature | None:
+    if not isinstance(value, dict):
+        return None
+    folder_role = value.get("folder_role")
+    if not isinstance(folder_role, str):
+        return None
+    return FolderSemanticSignature(
+        folder_role=folder_role,
+        dominant_topics=_string_list(value.get("dominant_topics")),
+        dominant_entities=_string_list(value.get("dominant_entities")),
+        dominant_time_hints=_string_list(value.get("dominant_time_hints")),
+        dominant_kinds=_string_list(value.get("dominant_kinds")),
+        frequent_extensions=_string_list(value.get("frequent_extensions")),
+        representative_terms=_string_list(value.get("representative_terms")),
+        discriminative_terms=_string_list(value.get("discriminative_terms")),
+        notable_children=_string_list(value.get("notable_children")),
+        sample_filenames=_string_list(value.get("sample_filenames")),
+    )
 
 
 def _query_response_points(response: Any) -> list[Any]:
