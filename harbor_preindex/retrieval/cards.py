@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from harbor_preindex.semantic import SemanticEnricherRegistry
+from harbor_preindex.semantic.models import SemanticHints
 from harbor_preindex.schemas import FileCard, FolderCard, ProjectProfile, SearchCandidate
 from harbor_preindex.signals.registry import SignalExtractorRegistry
 from harbor_preindex.utils.fs import relative_display
@@ -19,10 +21,12 @@ class RetrievalCardBuilder:
         self,
         root_path: Path,
         signal_registry: SignalExtractorRegistry,
+        semantic_registry: SemanticEnricherRegistry,
         max_profile_chars: int,
     ) -> None:
         self.root_path = root_path
         self.signal_registry = signal_registry
+        self.semantic_registry = semantic_registry
         self.max_profile_chars = max_profile_chars
 
     def build_folder_card(self, profile: ProjectProfile) -> FolderCard:
@@ -63,21 +67,19 @@ class RetrievalCardBuilder:
 
         extractor = self.signal_registry.resolve(file_path)
         signal = extractor.extract(file_path)
+        enriched_signal = self.semantic_registry.enrich(file_path, signal)
         relative_parent = relative_display(file_path.parent, self.root_path)
         relative_path = relative_display(file_path, self.root_path)
         excerpt = str(signal.metadata.get("text_excerpt", "")).strip()
         readable_stem = _readable_stem(file_path.stem)
-
-        parts = [
-            f"File name: {file_path.name}",
-            f"File stem: {readable_stem}",
-            f"Extension: {file_path.suffix.lower() or 'unknown'}",
-            f"Parent folder: {file_path.parent.name}",
-            f"Parent path: {relative_parent}",
-            f"Relative file path: {relative_path}",
-        ]
-        if excerpt:
-            parts.append(f"Extracted text excerpt: {excerpt}")
+        semantic_hints = enriched_signal.semantic_hints
+        parts = _file_card_parts(
+            file_path=file_path,
+            readable_stem=readable_stem,
+            relative_parent=relative_parent,
+            relative_path=relative_path,
+            semantic_hints=semantic_hints,
+        )
 
         return FileCard(
             file_id=make_file_point_id(str(file_path)),
@@ -85,13 +87,22 @@ class RetrievalCardBuilder:
             filename=file_path.name,
             extension=file_path.suffix.lower(),
             parent_path=str(file_path.parent),
-            modality=signal.modality,
+            modality=enriched_signal.modality,
             text_for_embedding=truncate_text("\n".join(parts), self.max_profile_chars),
             metadata={
                 "relative_path": relative_path,
                 "relative_parent_path": relative_parent,
                 "text_excerpt": excerpt,
                 "signal_confidence": signal.confidence,
+                "semantic_hints": semantic_hints.to_dict(),
+                "functional_summary": semantic_hints.functional_summary,
+                "enriched_confidence": enriched_signal.confidence,
+                "enriched_modality": enriched_signal.modality,
+                **{
+                    key: value
+                    for key, value in enriched_signal.metadata.items()
+                    if key not in {"input_file", "file_name", "suffix", "parent", "text_excerpt"}
+                },
             },
         )
 
@@ -99,3 +110,37 @@ class RetrievalCardBuilder:
 def _readable_stem(value: str) -> str:
     cleaned = re.sub(r"[_\-\.]+", " ", value).strip()
     return cleaned or value
+
+
+def _file_card_parts(
+    file_path: Path,
+    readable_stem: str,
+    relative_parent: str,
+    relative_path: str,
+    semantic_hints: SemanticHints,
+) -> list[str]:
+    parts = [
+        f"File name: {file_path.name}",
+        f"File stem: {readable_stem}",
+        f"Extension: {file_path.suffix.lower() or 'unknown'}",
+        f"Parent folder: {file_path.parent.name}",
+        f"Parent path: {relative_parent}",
+        f"Relative file path: {relative_path}",
+    ]
+    if semantic_hints.language_hint:
+        parts.append(f"Language hint: {semantic_hints.language_hint}")
+    if semantic_hints.kind_hints:
+        parts.append("Kind hints: " + ", ".join(semantic_hints.kind_hints))
+    if semantic_hints.topic_hints:
+        parts.append("Topic hints: " + ", ".join(semantic_hints.topic_hints))
+    if semantic_hints.entity_candidates:
+        parts.append("Entity candidates: " + ", ".join(semantic_hints.entity_candidates))
+    if semantic_hints.time_hints:
+        parts.append("Time hints: " + ", ".join(semantic_hints.time_hints))
+    if semantic_hints.structure_hints:
+        parts.append("Structure hints: " + ", ".join(semantic_hints.structure_hints))
+    if semantic_hints.functional_summary:
+        parts.append(f"Functional summary: {semantic_hints.functional_summary}")
+    if semantic_hints.evidence_hints:
+        parts.append("Evidence hints: " + "; ".join(semantic_hints.evidence_hints[:4]))
+    return parts

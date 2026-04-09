@@ -5,6 +5,11 @@ from pathlib import Path
 
 from harbor_preindex.profiling.extraction import ContentExtractor
 from harbor_preindex.retrieval.cards import RetrievalCardBuilder
+from harbor_preindex.semantic import (
+    CodeSemanticEnricher,
+    DocumentSemanticEnricher,
+    SemanticEnricherRegistry,
+)
 from harbor_preindex.schemas import ProjectProfile
 from harbor_preindex.signals.document import DocumentSignalExtractor
 from harbor_preindex.signals.registry import SignalExtractorRegistry
@@ -18,14 +23,21 @@ class RetrievalCardBuilderTests(unittest.TestCase):
             [
                 DocumentSignalExtractor(
                     extractor=extractor,
-                    supported_extensions=(".txt", ".md", ".pdf"),
+                    supported_extensions=(".txt", ".md", ".pdf", ".py"),
                     max_profile_chars=600,
                 )
+            ]
+        )
+        semantic_registry = SemanticEnricherRegistry(
+            [
+                CodeSemanticEnricher(),
+                DocumentSemanticEnricher(),
             ]
         )
         self.builder = RetrievalCardBuilder(
             root_path=self.root_path,
             signal_registry=registry,
+            semantic_registry=semantic_registry,
             max_profile_chars=600,
         )
 
@@ -42,7 +54,10 @@ class RetrievalCardBuilderTests(unittest.TestCase):
         self.assertEqual(first.metadata["relative_path"], "admin/cv/Raphael_Dok_CV.txt")
         self.assertIn("File name: Raphael_Dok_CV.txt", first.text_for_embedding)
         self.assertIn("Parent path: admin/cv", first.text_for_embedding)
-        self.assertIn("curriculum vitae", first.text_for_embedding.lower())
+        self.assertIn("Kind hints:", first.text_for_embedding)
+        self.assertIn("Functional summary:", first.text_for_embedding)
+        self.assertIn("semantic_hints", first.metadata)
+        self.assertLessEqual(len(first.text_for_embedding), 600)
 
     def test_build_folder_card_from_profile_keeps_existing_contract(self) -> None:
         profile = ProjectProfile(

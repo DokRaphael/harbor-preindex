@@ -16,6 +16,11 @@ from harbor_preindex.profiling import ContentExtractor, ProjectProfileBuilder
 from harbor_preindex.retrieval.cards import RetrievalCardBuilder
 from harbor_preindex.retrieval.core import HybridRetrievalCore
 from harbor_preindex.retrieval.service import FileCardRetriever, ProjectRetriever
+from harbor_preindex.semantic import (
+    CodeSemanticEnricher,
+    DocumentSemanticEnricher,
+    SemanticEnricherRegistry,
+)
 from harbor_preindex.schemas import (
     DiscoveredProject,
     FileCard,
@@ -86,9 +91,16 @@ class HarborPreindexApp:
                 )
             ]
         )
+        semantic_registry = SemanticEnricherRegistry(
+            [
+                CodeSemanticEnricher(),
+                DocumentSemanticEnricher(),
+            ]
+        )
         card_builder = RetrievalCardBuilder(
             root_path=settings.harbor_root,
             signal_registry=signal_registry,
+            semantic_registry=semantic_registry,
             max_profile_chars=settings.max_profile_chars,
         )
         crawler = ProjectCrawler(

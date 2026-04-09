@@ -46,11 +46,6 @@ class ContentExtractor:
         """Extract a normalized excerpt from a supported document."""
 
         suffix = file_path.suffix.lower()
-        if suffix in {".txt", ".md"}:
-            try:
-                return self._extract_text_file(file_path)
-            except OSError:
-                return ""
         if suffix == ".pdf":
             try:
                 excerpt = self._extract_pdf(file_path)
@@ -67,7 +62,10 @@ class ContentExtractor:
                     },
                 )
                 return ""
-        return ""
+        try:
+            return self._extract_text_file(file_path)
+        except OSError:
+            return ""
 
     def _extract_text_file(self, file_path: Path) -> str:
         content = file_path.read_text(encoding="utf-8", errors="ignore")
