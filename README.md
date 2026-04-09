@@ -4,7 +4,8 @@
 `harbor-preindex` is a Python CLI tool for preparing a filesystem for semantic retrieval and assisted file placement.
 
 ## Demo
-https://github.com/user-attachments/assets/e95dc46c-6f92-47c6-898c-d7414265ec48
+
+https://github.com/user-attachments/assets/9f81ecf0-ea47-40cb-b8b3-76c8230c020c
 
 It helps answer questions such as:
 
