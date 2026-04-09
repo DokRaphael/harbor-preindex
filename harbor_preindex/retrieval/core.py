@@ -374,9 +374,14 @@ class HybridRetrievalCore:
         candidate_topic_hints = _string_list(semantic_hints.get("topic_hints"))
         candidate_entity_hints = _string_list(semantic_hints.get("entity_candidates"))
         candidate_time_hints = _string_list(semantic_hints.get("time_hints"))
+        filename_segments = _string_list(metadata.get("filename_terms"))
 
         source_terms: dict[str, list[str]] = {}
-        filename_terms = _matched_query_terms(query_tokens, candidate.filename)
+        _, filename_terms = _matched_values_and_terms(
+            query_text,
+            query_tokens,
+            [candidate.filename, *filename_segments],
+        )
         parent_terms = _matched_query_terms(
             query_tokens,
             str(metadata.get("relative_parent_path", candidate.parent_path)),
