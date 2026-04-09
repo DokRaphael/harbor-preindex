@@ -40,6 +40,7 @@ CODE_EXTENSIONS = {
     ".toml",
     ".ts",
     ".tsx",
+    ".xml",
     ".yaml",
     ".yml",
     ".zsh",
@@ -75,6 +76,7 @@ _TOPIC_ALIASES = {
     "toml": "serialization",
     "typer": "cli",
     "unittest": "tests",
+    "xml": "serialization",
     "yaml": "serialization",
 }
 
@@ -162,6 +164,8 @@ def is_code_like(file_path: Path, excerpt: str) -> bool:
 def _language_hint(suffix: str) -> str:
     mapping = {
         ".bash": "shell",
+        ".cfg": "config",
+        ".conf": "config",
         ".css": "css",
         ".go": "go",
         ".html": "html",
@@ -179,6 +183,7 @@ def _language_hint(suffix: str) -> str:
         ".toml": "toml",
         ".ts": "typescript",
         ".tsx": "typescript",
+        ".xml": "xml",
         ".yaml": "yaml",
         ".yml": "yaml",
         ".zsh": "shell",
@@ -279,7 +284,7 @@ def _kind_hints(file_path: Path, imports: list[str], excerpt: str) -> list[str]:
         hints.append("test_module")
     elif file_path.suffix.lower() in {".sh", ".bash", ".zsh"} or excerpt.startswith("#!"):
         hints.append("automation_script")
-    elif file_path.suffix.lower() in {".json", ".toml", ".yaml", ".yml", ".ini", ".cfg"}:
+    elif file_path.suffix.lower() in {".json", ".toml", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".xml"}:
         hints.append("configuration_artifact")
     else:
         hints.append("code_module")
