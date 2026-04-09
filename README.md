@@ -1,8 +1,14 @@
 # harbor-preindex
 
-`harbor-preindex` is a Python CLI tool that helps answer a simple question:
 
-**Given a new file, which existing project folder should it go into?**
+`harbor-preindex` is a Python CLI tool for preparing a filesystem for semantic retrieval and assisted file placement.
+
+It helps answer questions such as:
+
+- Given a new file, which existing project folder should it go into?
+- Where is my resume?
+- Where are my Amazon invoices?
+- Where is the code that talks to Qdrant?
 
 It is designed for large, already-existing storage trees such as a NAS, archive, or migration dump, where files are mostly organized but new incoming documents are harder to place consistently.
 
@@ -49,7 +55,9 @@ Version 1 is intentionally narrow and practical:
 - text-first, with semantic enrichment for documents and code-like text files
 - two retrieval levels: existing folder index plus a lightweight file index
 - local crawl of an already-mounted storage root
-- embeddings and LLM decision via configurable Ollama HTTP backends
+- embeddings via configurable Ollama HTTP backends
+- optional LLM-based reranking for incoming-file folder suggestion
+- LLM-free hybrid retrieval for plain text queries
 - local Qdrant storage
 - automatic decision when confidence is high enough
 - structured JSON output for later Harbor integration
@@ -84,7 +92,16 @@ The retrieval core now also supports plain text search such as:
 
 - `where is my resume?`
 - `where are my Amazon invoices?`
-- `find the Neuraloop docs`
+- `find the harbor docs`
+
+There are now two related query paths:
+
+1. file placement
+   file -> SignalExtractor -> ExtractedSignal -> SemanticEnricher -> EnrichedSignal -> embedding -> retrieval -> decision
+
+2. semantic retrieval
+   text query -> embedding -> hybrid retrieval on files + folders -> explanation
+
 
 This text query path uses a simple hybrid search:
 
@@ -378,6 +395,20 @@ This adds extra fields such as:
 
 ---
 
+### Debug evidence for retrieval queries
+
+```bash
+harbor-preindex query --debug-evidence "where is the code that talks to qdrant?"
+```
+
+This adds extra fields such as:
+
+* `evidence.matched_sources` for the parts of the file or folder that overlapped with the query
+* `evidence.source_terms` for the compact matched terms grouped by source
+* `evidence.matched_topic_hints`, `matched_entity_candidates`, `matched_imports`, or `matched_symbols` when available
+
+---
+
 ## Example query result
 
 ```json
@@ -540,7 +571,13 @@ This is a focused MVP, not a complete production platform.
 
 ## Possible next steps
 
-* able to answer "Where is my plumber invoice from last year ?"
+* better handling of structured query hints such as “my plumber invoice from last year”
+* lightweight query-time hint extraction without heavy filtering
+  Examples:
+  `invoice` -> kind hint
+  `last year` -> coarse time hint
+  `amazon` -> entity hint
+  `code that talks to qdrant` -> technical topic hint
 * better project-folder detection
 * controlled recursive profile enrichment
 * local API or daemon mode
