@@ -3,6 +3,9 @@
 
 `harbor-preindex` is a Python CLI tool for preparing a filesystem for semantic retrieval and assisted file placement.
 
+## Demo
+https://github.com/user-attachments/assets/e95dc46c-6f92-47c6-898c-d7414265ec48
+
 It helps answer questions such as:
 
 - Given a new file, which existing project folder should it go into?
