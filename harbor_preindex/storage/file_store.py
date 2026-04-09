@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from harbor_preindex.schemas import IndexBuildSummary, QueryResult, RetrievalResponse
+from harbor_preindex.schemas import BatchQueryResult, IndexBuildSummary, QueryResult, RetrievalResponse
 from harbor_preindex.utils.text import slugify, utc_now_compact
 
 
@@ -24,6 +24,11 @@ class JsonResultStore:
     def save_query_result(self, result: QueryResult) -> Path:
         stem = slugify(Path(result.input_file).stem)
         filename = f"query_{utc_now_compact()}_{stem}.json"
+        return self._write(filename, result.to_dict())
+
+    def save_batch_query_result(self, result: BatchQueryResult) -> Path:
+        stem = slugify(Path(result.input_path).name or "batch")
+        filename = f"batch_query_{utc_now_compact()}_{stem}.json"
         return self._write(filename, result.to_dict())
 
     def save_retrieval_response(self, response: RetrievalResponse) -> Path:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from collections import defaultdict
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -23,6 +25,12 @@ from harbor_preindex.semantic import (
     SemanticEnricherRegistry,
 )
 from harbor_preindex.schemas import (
+    BatchGroup,
+    BatchPlacement,
+    BatchQueryResult,
+    BatchReviewItem,
+    BatchSkippedItem,
+    BatchSummary,
     DiscoveredProject,
     FileCard,
     FileQueryContext,
@@ -408,21 +416,38 @@ class HarborPreindexApp:
 
         result, query_context, signal = self._run_query(file_path, top_k=top_k)
         payload = result.to_dict()
-        payload["debug"] = {
-            "signal_modality": signal.modality,
-            "signal_confidence": round(signal.confidence, 4),
-            "query_text_excerpt": query_context.text_excerpt,
-            "query_text_profile": query_context.text_profile,
-            "candidate_text_profiles": [
-                {
-                    "project_id": candidate.project_id,
-                    "path": candidate.path,
-                    "score": round(candidate.score, 4),
-                    "text_profile": candidate.text_profile,
-                }
-                for candidate in result.top_candidates
-            ],
-        }
+        payload["debug"] = self._query_debug_payload_data(result, query_context, signal)
+        return payload
+
+    def query_batch(
+        self,
+        input_path: Path,
+        top_k: int | None = None,
+        recursive: bool = True,
+    ) -> BatchQueryResult:
+        """Route a directory or a single file as a batch placement plan."""
+
+        result, _debug_map = self._run_batch_query(input_path, top_k=top_k, recursive=recursive)
+        return result
+
+    def query_batch_debug_payload(
+        self,
+        input_path: Path,
+        top_k: int | None = None,
+        recursive: bool = True,
+    ) -> dict[str, Any]:
+        """Return batch placement output augmented with per-file debug profiles."""
+
+        result, debug_map = self._run_batch_query(input_path, top_k=top_k, recursive=recursive)
+        payload = result.to_dict()
+        for placement in payload["placements"]:
+            debug_payload = debug_map.get(str(placement["source_path"]))
+            if debug_payload:
+                placement["debug"] = debug_payload
+        for review_item in payload["review_queue"]:
+            debug_payload = debug_map.get(str(review_item["source_path"]))
+            if debug_payload:
+                review_item["debug"] = debug_payload
         return payload
 
     def query(self, text: str, top_k: int | None = None) -> RetrievalResponse:
@@ -486,33 +511,7 @@ class HarborPreindexApp:
     ) -> tuple[QueryResult, FileQueryContext, ExtractedSignal]:
         """Execute a query and return both result and extracted query context."""
 
-        if not file_path.exists():
-            raise FileNotFoundError(f"input file does not exist: {file_path}")
-        if not file_path.is_file():
-            raise ValueError(f"input path is not a file: {file_path}")
-
-        limit = top_k if top_k is not None else self.settings.top_k
-        if limit <= 0:
-            raise ValueError("top_k must be greater than zero")
-
-        signal_extractor = self.signal_registry.resolve(file_path)
-        if not self.vector_store.collection_exists():
-            raise RuntimeError(
-                f"Qdrant collection '{self.settings.qdrant_collection}' does not exist; "
-                "run `build-index` first"
-            )
-        signal = signal_extractor.extract(file_path)
-        query_context = self.profile_builder.build_query_context_from_signal(file_path, signal)
-        embedding = self.embedding_backend.embed_text(signal.text_for_embedding)
-        candidates = self.retriever.retrieve(embedding, limit)
-        decision = self.decision_engine.decide(query_context, candidates)
-
-        result = QueryResult(
-            input_file=str(file_path),
-            top_candidates=candidates,
-            decision=decision,
-            generated_at=utc_now_iso(),
-        )
+        result, query_context, signal = self._compute_query_result(file_path, top_k=top_k)
         self.result_store.save_query_result(result)
         self.audit_store.record_query_run(result)
 
@@ -520,13 +519,276 @@ class HarborPreindexApp:
             "query_file_finished",
             extra={
                 "input_file": str(file_path),
-                "candidate_count": len(candidates),
-                "decision_mode": decision.mode,
+                "candidate_count": len(result.top_candidates),
+                "decision_mode": result.decision.mode,
                 "signal_modality": signal.modality,
-                "selected_project_id": decision.selected_project_id,
+                "selected_project_id": result.decision.selected_project_id,
             },
         )
         return result, query_context, signal
+
+    def _run_batch_query(
+        self,
+        input_path: Path,
+        top_k: int | None,
+        recursive: bool,
+    ) -> tuple[BatchQueryResult, dict[str, dict[str, Any]]]:
+        if not input_path.exists():
+            raise FileNotFoundError(f"input path does not exist: {input_path}")
+
+        limit = self._resolve_query_limit(top_k)
+        file_paths, mode = self._collect_batch_file_paths(input_path, recursive=recursive)
+        scanned_files = len(file_paths)
+
+        skipped: list[BatchSkippedItem] = []
+        supported_paths: list[Path] = []
+        for file_path in file_paths:
+            if self._supports_query_file(file_path):
+                supported_paths.append(file_path)
+            else:
+                skipped.append(
+                    BatchSkippedItem(
+                        source_path=str(file_path),
+                        reason="unsupported_extension",
+                    )
+                )
+
+        if supported_paths:
+            self._ensure_query_collection_exists()
+
+        placements: list[BatchPlacement] = []
+        review_queue: list[BatchReviewItem] = []
+        debug_map: dict[str, dict[str, Any]] = {}
+
+        for file_path in supported_paths:
+            try:
+                result, query_context, signal = self._compute_query_result_for_limit(file_path, limit)
+            except (OSError, UnicodeError, ValueError) as exc:
+                skipped.append(
+                    BatchSkippedItem(
+                        source_path=str(file_path),
+                        reason="unreadable_or_malformed",
+                        error=str(exc),
+                    )
+                )
+                logger.warning(
+                    "batch_query_file_skipped",
+                    extra={
+                        "source_path": str(file_path),
+                        "reason": "unreadable_or_malformed",
+                        "error": str(exc),
+                    },
+                )
+                continue
+
+            placement = self._build_batch_placement(result)
+            placements.append(placement)
+            if placement.needs_review:
+                review_queue.append(
+                    BatchReviewItem(
+                        source_path=placement.source_path,
+                        why=placement.why,
+                        confidence=placement.confidence,
+                        top_candidates=result.top_candidates,
+                    )
+                )
+            debug_map[placement.source_path] = self._query_debug_payload_data(
+                result,
+                query_context,
+                signal,
+            )
+
+        groups = self._group_batch_placements(placements)
+        summary = BatchSummary(
+            scanned_files=scanned_files,
+            supported_files=len(supported_paths),
+            classified=sum(1 for placement in placements if not placement.needs_review),
+            needs_review=sum(1 for placement in placements if placement.needs_review),
+            skipped=len(skipped),
+        )
+        batch_result = BatchQueryResult(
+            input_path=str(input_path),
+            mode=mode,
+            summary=summary,
+            placements=placements,
+            groups=groups,
+            review_queue=review_queue,
+            skipped=skipped,
+            generated_at=utc_now_iso(),
+        )
+        self.result_store.save_batch_query_result(batch_result)
+        self.audit_store.record_batch_query_run(batch_result)
+
+        logger.info(
+            "query_batch_finished",
+            extra={
+                "input_path": str(input_path),
+                "mode": mode,
+                "scanned_files": scanned_files,
+                "supported_files": len(supported_paths),
+                "classified": summary.classified,
+                "needs_review": summary.needs_review,
+                "skipped": summary.skipped,
+                "group_count": len(groups),
+            },
+        )
+        return batch_result, debug_map
+
+    def _compute_query_result(
+        self,
+        file_path: Path,
+        top_k: int | None = None,
+    ) -> tuple[QueryResult, FileQueryContext, ExtractedSignal]:
+        limit = self._resolve_query_limit(top_k)
+        return self._compute_query_result_for_limit(file_path, limit)
+
+    def _compute_query_result_for_limit(
+        self,
+        file_path: Path,
+        limit: int,
+    ) -> tuple[QueryResult, FileQueryContext, ExtractedSignal]:
+        self._validate_query_file_input(file_path)
+        self._ensure_query_collection_exists()
+
+        signal_extractor = self.signal_registry.resolve(file_path)
+        signal = signal_extractor.extract(file_path)
+        query_context = self.profile_builder.build_query_context_from_signal(file_path, signal)
+        embedding = self.embedding_backend.embed_text(signal.text_for_embedding)
+        candidates = self.retriever.retrieve(embedding, limit)
+        decision = self.decision_engine.decide(query_context, candidates)
+
+        return (
+            QueryResult(
+                input_file=str(file_path),
+                top_candidates=candidates,
+                decision=decision,
+                generated_at=utc_now_iso(),
+            ),
+            query_context,
+            signal,
+        )
+
+    def _resolve_query_limit(self, top_k: int | None) -> int:
+        limit = top_k if top_k is not None else self.settings.top_k
+        if limit <= 0:
+            raise ValueError("top_k must be greater than zero")
+        return limit
+
+    def _validate_query_file_input(self, file_path: Path) -> None:
+        if not file_path.exists():
+            raise FileNotFoundError(f"input file does not exist: {file_path}")
+        if not file_path.is_file():
+            raise ValueError(f"input path is not a file: {file_path}")
+
+    def _ensure_query_collection_exists(self) -> None:
+        if not self.vector_store.collection_exists():
+            raise RuntimeError(
+                f"Qdrant collection '{self.settings.qdrant_collection}' does not exist; "
+                "run `build-index` first"
+            )
+
+    def _supports_query_file(self, file_path: Path) -> bool:
+        return any(extractor.supports(file_path) for extractor in self.signal_registry.extractors)
+
+    def _collect_batch_file_paths(
+        self,
+        input_path: Path,
+        recursive: bool,
+    ) -> tuple[list[Path], str]:
+        if input_path.is_file():
+            return [input_path], "single_file"
+        if not input_path.is_dir():
+            raise ValueError(f"input path is neither a file nor a directory: {input_path}")
+
+        if recursive:
+            file_paths: list[Path] = []
+            for current_root, dirnames, filenames in os.walk(input_path, followlinks=False):
+                dirnames[:] = sorted(dirnames)
+                current_path = Path(current_root)
+                file_paths.extend(current_path / filename for filename in sorted(filenames))
+            return file_paths, "recursive"
+
+        return (
+            sorted(path for path in input_path.iterdir() if path.is_file()),
+            "flat",
+        )
+
+    def _build_batch_placement(self, result: QueryResult) -> BatchPlacement:
+        decision = result.decision
+        needs_review = decision.mode == "review_needed" or decision.selected_path is None
+        return BatchPlacement(
+            source_path=result.input_file,
+            selected_path=decision.selected_path,
+            confidence=decision.confidence,
+            needs_review=needs_review,
+            why=self._batch_why(result),
+            decision_mode=decision.mode,
+            selected_project_id=decision.selected_project_id,
+            top_candidates=list(result.top_candidates) if needs_review else [],
+        )
+
+    def _group_batch_placements(self, placements: list[BatchPlacement]) -> list[BatchGroup]:
+        grouped: dict[str, list[BatchPlacement]] = defaultdict(list)
+        for placement in placements:
+            if placement.needs_review or not placement.selected_path:
+                continue
+            grouped[placement.selected_path].append(placement)
+
+        groups: list[BatchGroup] = []
+        for target_path in sorted(grouped):
+            members = sorted(placement.source_path for placement in grouped[target_path])
+            average_confidence = sum(
+                placement.confidence for placement in grouped[target_path]
+            ) / max(len(grouped[target_path]), 1)
+            groups.append(
+                BatchGroup(
+                    suggested_target_path=target_path,
+                    file_count=len(grouped[target_path]),
+                    members=members,
+                    average_confidence=average_confidence,
+                )
+            )
+        return groups
+
+    def _batch_why(self, result: QueryResult) -> str:
+        if not result.top_candidates:
+            return "no candidate folder matched the incoming file"
+
+        decision = result.decision
+        if decision.mode == "auto_top1" and decision.selected_path:
+            return "selected folder clearly led the semantic ranking"
+        if decision.mode == "llm_rerank" and decision.selected_path:
+            return "top candidates were close; reranking selected the most plausible folder"
+        if decision.reason == "llm_error_or_invalid_response":
+            return "automatic routing was inconclusive and reranking failed"
+
+        top_score = result.top_candidates[0].score
+        second_score = result.top_candidates[1].score if len(result.top_candidates) > 1 else 0.0
+        if (top_score - second_score) < 0.08:
+            return "ambiguous semantic match across multiple candidate folders"
+        return "incoming file signal remains ambiguous across candidate folders"
+
+    def _query_debug_payload_data(
+        self,
+        result: QueryResult,
+        query_context: FileQueryContext,
+        signal: ExtractedSignal,
+    ) -> dict[str, Any]:
+        return {
+            "signal_modality": signal.modality,
+            "signal_confidence": round(signal.confidence, 4),
+            "query_text_excerpt": query_context.text_excerpt,
+            "query_text_profile": query_context.text_profile,
+            "candidate_text_profiles": [
+                {
+                    "project_id": candidate.project_id,
+                    "path": candidate.path,
+                    "score": round(candidate.score, 4),
+                    "text_profile": candidate.text_profile,
+                }
+                for candidate in result.top_candidates
+            ],
+        }
 
     def health_check(self) -> dict[str, Any]:
         """Return a JSON-friendly health report."""

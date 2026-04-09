@@ -1,6 +1,12 @@
 """Shared data models."""
 
 from harbor_preindex.schemas.models import (
+    BatchGroup,
+    BatchPlacement,
+    BatchQueryResult,
+    BatchReviewItem,
+    BatchSkippedItem,
+    BatchSummary,
     Decision,
     DiscoveredProject,
     FileCard,
@@ -23,6 +29,12 @@ from harbor_preindex.schemas.models import (
 )
 
 __all__ = [
+    "BatchGroup",
+    "BatchPlacement",
+    "BatchQueryResult",
+    "BatchReviewItem",
+    "BatchSkippedItem",
+    "BatchSummary",
     "Decision",
     "DiscoveredProject",
     "FileCard",

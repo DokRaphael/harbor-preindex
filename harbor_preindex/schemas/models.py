@@ -368,6 +368,143 @@ class QueryResult:
 
 
 @dataclass(slots=True)
+class BatchSummary:
+    """Compact counters for a batch placement run."""
+
+    scanned_files: int
+    supported_files: int
+    classified: int
+    needs_review: int
+    skipped: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scanned_files": self.scanned_files,
+            "supported_files": self.supported_files,
+            "classified": self.classified,
+            "needs_review": self.needs_review,
+            "skipped": self.skipped,
+        }
+
+
+@dataclass(slots=True)
+class BatchPlacement:
+    """Per-file placement result inside a batch plan."""
+
+    source_path: str
+    selected_path: str | None
+    confidence: float
+    needs_review: bool
+    why: str
+    decision_mode: str
+    selected_project_id: str | None = None
+    top_candidates: list[SearchCandidate] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "source_path": self.source_path,
+            "selected_path": self.selected_path,
+            "confidence": round(self.confidence, 4),
+            "needs_review": self.needs_review,
+            "why": self.why,
+            "decision_mode": self.decision_mode,
+        }
+        if self.selected_project_id is not None:
+            payload["selected_project_id"] = self.selected_project_id
+        if self.top_candidates:
+            payload["top_candidates"] = [
+                candidate.to_result_dict() for candidate in self.top_candidates
+            ]
+        return payload
+
+
+@dataclass(slots=True)
+class BatchGroup:
+    """Compact grouped view for batch placements sharing the same destination."""
+
+    suggested_target_path: str
+    file_count: int
+    members: list[str]
+    average_confidence: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "suggested_target_path": self.suggested_target_path,
+            "file_count": self.file_count,
+            "members": list(self.members),
+        }
+        if self.average_confidence is not None:
+            payload["average_confidence"] = round(self.average_confidence, 4)
+        return payload
+
+
+@dataclass(slots=True)
+class BatchReviewItem:
+    """Review queue item extracted from a batch placement run."""
+
+    source_path: str
+    why: str
+    confidence: float
+    top_candidates: list[SearchCandidate] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "source_path": self.source_path,
+            "why": self.why,
+            "confidence": round(self.confidence, 4),
+        }
+        if self.top_candidates:
+            payload["top_candidates"] = [
+                candidate.to_result_dict() for candidate in self.top_candidates
+            ]
+        return payload
+
+
+@dataclass(slots=True)
+class BatchSkippedItem:
+    """Skipped file inside a batch placement run."""
+
+    source_path: str
+    reason: str
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "source_path": self.source_path,
+            "reason": self.reason,
+        }
+        if self.error:
+            payload["error"] = self.error
+        return payload
+
+
+@dataclass(slots=True)
+class BatchQueryResult:
+    """JSON-serializable placement plan for a batch of incoming files."""
+
+    input_path: str
+    mode: str
+    summary: BatchSummary
+    placements: list[BatchPlacement]
+    groups: list[BatchGroup]
+    review_queue: list[BatchReviewItem]
+    skipped: list[BatchSkippedItem]
+    generated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "input_path": self.input_path,
+            "mode": self.mode,
+            "summary": self.summary.to_dict(),
+            "placements": [placement.to_dict() for placement in self.placements],
+            "groups": [group.to_dict() for group in self.groups],
+            "review_queue": [item.to_dict() for item in self.review_queue],
+            "skipped": [item.to_dict() for item in self.skipped],
+            "generated_at": self.generated_at,
+        }
+
+
+@dataclass(slots=True)
 class IndexBuildSummary:
     """JSON-serializable index build summary."""
 

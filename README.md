@@ -259,6 +259,7 @@ mkdir -p ./data/storage-root
 harbor-preindex health-check
 harbor-preindex build-index
 harbor-preindex query-file /tmp/incoming/contract_dupont.pdf
+harbor-preindex query-batch /tmp/incoming_dump
 harbor-preindex query "where is my resume?"
 ```
 
@@ -356,6 +357,15 @@ harbor-preindex rescan
 harbor-preindex query-file /tmp/incoming/contract_dupont.pdf
 ```
 
+### Query an incoming batch
+
+```bash
+harbor-preindex query-batch /tmp/incoming_dump
+```
+
+`query-batch` scans a directory recursively by default, reuses the incoming-file placement pipeline on each supported file, and returns a placement plan with grouped suggested destinations.
+It does not move files.
+
 ### Query the retrieval core
 
 ```bash
@@ -402,6 +412,19 @@ This adds extra fields such as:
 
 * the extracted text profile for the input file
 * the `text_profile` of the top candidate folders
+
+---
+
+### Optional debug mode for batch placement
+
+```bash
+harbor-preindex query-batch --debug-profiles /tmp/incoming_dump
+```
+
+This adds extra fields such as:
+
+* per-file extracted query profiles
+* candidate folder `text_profile` values for each processed file
 
 ---
 
@@ -533,6 +556,15 @@ Still not covered in this phase:
 * image, audio, or video extraction
 * rich office formats such as `.docx`, `.xlsx`, or `.pptx`
 * deep language-specific parsing pipelines
+
+Batch placement stays in the same specialized engine role:
+
+* analyze an incoming folder or batch of files
+* propose destination paths
+* explain ambiguous cases
+* return stable JSON for a future Harbor orchestration layer
+
+It does not move, rename, or orchestrate files across the storage tree.
 
 ---
 
