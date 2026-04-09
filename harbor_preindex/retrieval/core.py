@@ -83,6 +83,26 @@ class MatchExplanation:
     hint_bonus: float = 0.0
 
 
+_SPECIFIC_DOCUMENT_QUERY_TERMS = {
+    "bill",
+    "contract",
+    "cv",
+    "doc",
+    "docs",
+    "document",
+    "documentation",
+    "facture",
+    "factures",
+    "guide",
+    "invoice",
+    "manual",
+    "receipt",
+    "resume",
+    "spec",
+    "specification",
+}
+
+
 class HybridRetrievalCore:
     """Run a hybrid file and folder retrieval for plain text queries."""
 
@@ -436,6 +456,16 @@ class HybridRetrievalCore:
         matched_entity_values = _compact_list([*entity_matches, *entity_hint_terms], limit=4)
         matched_time_values = _compact_list([*time_matches, *query_time_matches], limit=4)
         matched_topic_values = _compact_list([*topic_matches, *query_topic_matches], limit=4)
+        specific_document_query = _is_specific_document_query(query_hints)
+        hint_bonus, hint_bonus_notes = _query_hint_bonus(
+            target_kind="file",
+            specific_document_query=specific_document_query,
+            kind_matches=kind_matches,
+            topic_matches=query_topic_matches,
+            technical_matches=technical_matches,
+            entity_matches=entity_hint_terms,
+            time_matches=query_time_matches,
+        )
         notes = _compact_list(
             [
                 _note_from_matches("kind hints aligned", kind_matches),
@@ -445,22 +475,9 @@ class HybridRetrievalCore:
                 _note_from_matches("time hints aligned", matched_time_values),
                 _note_from_matches("imports aligned", import_matches),
                 _note_from_matches("symbols aligned", symbol_matches),
-                _query_hint_bonus_note(
-                    kind_matches=kind_matches,
-                    topic_matches=query_topic_matches,
-                    technical_matches=technical_matches,
-                    entity_matches=entity_hint_terms,
-                    time_matches=query_time_matches,
-                ),
+                *hint_bonus_notes,
             ],
-            limit=5,
-        )
-        hint_bonus = _query_hint_bonus(
-            kind_matches=kind_matches,
-            topic_matches=query_topic_matches,
-            technical_matches=technical_matches,
-            entity_matches=entity_hint_terms,
-            time_matches=query_time_matches,
+            limit=6,
         )
         evidence = RetrievalEvidence(
             matched_query_terms=_compact_list(
@@ -548,13 +565,15 @@ class HybridRetrievalCore:
             [*entity_hint_terms, *time_hint_matches, *topic_hint_matches],
         )
 
-        hint_bonus = _query_hint_bonus(
+        specific_document_query = _is_specific_document_query(query_hints)
+        hint_bonus, hint_bonus_notes = _query_hint_bonus(
+            target_kind="folder",
+            specific_document_query=specific_document_query,
             kind_matches=[],
-            topic_matches=[],
+            topic_matches=topic_hint_matches,
             technical_matches=technical_hint_matches,
-            entity_matches=[],
+            entity_matches=entity_hint_terms,
             time_matches=time_hint_matches,
-            max_bonus=0.08,
         )
         evidence = RetrievalEvidence(
             matched_query_terms=_compact_list(
@@ -576,15 +595,9 @@ class HybridRetrievalCore:
                     _note_from_matches("entity terms aligned", entity_hint_terms),
                     _note_from_matches("time hints aligned", time_hint_matches),
                     _note_from_matches("topic hints aligned", topic_hint_matches),
-                    _query_hint_bonus_note(
-                        kind_matches=[],
-                        topic_matches=[],
-                        technical_matches=technical_hint_matches,
-                        entity_matches=[],
-                        time_matches=time_hint_matches,
-                    ),
+                    *hint_bonus_notes,
                 ],
-                limit=4,
+                limit=6,
             ),
             matched_entity_candidates=entity_hint_terms,
             matched_time_hints=time_hint_matches,
@@ -814,56 +827,73 @@ def _note_from_matches(prefix: str, matches: Sequence[str]) -> str | None:
 
 def _query_hint_bonus(
     *,
+    target_kind: TargetKind,
+    specific_document_query: bool,
     kind_matches: Sequence[str],
     topic_matches: Sequence[str],
     technical_matches: Sequence[str],
     entity_matches: Sequence[str],
     time_matches: Sequence[str],
-    max_bonus: float = 0.14,
-) -> float:
+) -> tuple[float, list[str]]:
+    kind_topic_matched = bool(kind_matches or topic_matches)
+    entity_matched = bool(entity_matches)
+    technical_matched = bool(technical_matches)
+    time_matched = bool(time_matches)
+    coverage = sum((kind_topic_matched, entity_matched, technical_matched, time_matched))
+
     bonus = 0.0
-    if kind_matches:
-        bonus += 0.03
-    if topic_matches:
+    notes: list[str] = []
+
+    if kind_topic_matched:
+        bonus += 0.018
+    if entity_matched:
         bonus += 0.02
-    if technical_matches:
-        bonus += 0.04
-    if entity_matches:
-        bonus += 0.03
-    if time_matches:
-        bonus += 0.03
-    return round(min(max_bonus, bonus), 4)
+    if technical_matched:
+        bonus += 0.024
+
+    if time_matched:
+        if coverage <= 1:
+            if specific_document_query and target_kind == "folder":
+                bonus -= 0.015
+                notes.append(
+                    "time hint matched with no other strong hint; conservative adjustment applied"
+                )
+            else:
+                bonus += 0.004
+                notes.append("time hint matched with no other strong hint; limited bonus applied")
+        else:
+            bonus += 0.012
+
+    if coverage >= 2:
+        bonus += 0.012
+        notes.append("multi-hint coverage increased ranking confidence")
+    if coverage >= 3:
+        bonus += 0.01
+    if coverage >= 4:
+        bonus += 0.006
+
+    if specific_document_query and target_kind == "file":
+        if (kind_topic_matched or technical_matched or entity_matched) and (entity_matched or time_matched):
+            bonus += 0.012
+            notes.append("file precision preference applied for specific document-like query")
+
+    if specific_document_query and target_kind == "folder":
+        if bonus > 0.0:
+            bonus *= 0.72
+            notes.append("folder bonus kept conservative for specific document-like query")
+        if time_matched and coverage <= 2 and not technical_matched:
+            bonus = min(bonus, 0.01)
+
+    max_bonus = 0.14 if target_kind == "file" else 0.09
+    return round(min(max_bonus, bonus), 4), _compact_list(notes, limit=3)
 
 
-def _query_hint_bonus_note(
-    *,
-    kind_matches: Sequence[str],
-    topic_matches: Sequence[str],
-    technical_matches: Sequence[str],
-    entity_matches: Sequence[str],
-    time_matches: Sequence[str],
-) -> str | None:
-    bonus = _query_hint_bonus(
-        kind_matches=kind_matches,
-        topic_matches=topic_matches,
-        technical_matches=technical_matches,
-        entity_matches=entity_matches,
-        time_matches=time_matches,
-    )
-    if bonus <= 0.0:
-        return None
-    categories: list[str] = []
-    if kind_matches:
-        categories.append("kind")
-    if topic_matches:
-        categories.append("topic")
-    if technical_matches:
-        categories.append("technical")
-    if entity_matches:
-        categories.append("entity")
-    if time_matches:
-        categories.append("time")
-    return f"query hint bonus applied from {', '.join(categories)} alignment"
+def _is_specific_document_query(query_hints: StructuredQueryHints) -> bool:
+    has_document_signal = bool(
+        set(query_hints.kind_hints) & {"transactional_document", "technical_document"}
+    ) or any(term in _SPECIFIC_DOCUMENT_QUERY_TERMS for term in query_hints.normalized_terms)
+    has_focus_signal = bool(query_hints.entity_terms or query_hints.time_hints)
+    return has_document_signal and has_focus_signal
 
 
 def _normalized_value(value: str) -> str:

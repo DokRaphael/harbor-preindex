@@ -121,6 +121,7 @@ This adds an `evidence` object per match with compact overlap signals such as ma
 
 It also adds top-level `query_hints`, which exposes the lightweight structured interpretation of the query used for hint-aware reranking and explanation.
 These hints are soft signals only. They are not a heavy filter layer and do not hard-exclude results by default.
+Time hints are intentionally conservative on their own, while candidates that align across multiple hint families receive a stronger but still bounded rerank bonus.
 
 ---
 

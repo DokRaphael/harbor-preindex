@@ -81,6 +81,8 @@ _TRANSACTIONAL_TERMS = {
     "billing",
     "expense",
     "expenses",
+    "facture",
+    "factures",
     "invoice",
     "invoices",
     "order",
