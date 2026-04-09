@@ -488,7 +488,9 @@ Current extraction support:
 * filenames
 * text documents such as `.txt` and `.md`
 * text-based PDF via `pypdf`
-* code-like text files when their extensions are included in `SUPPORTED_EXTENSIONS`
+* Phase 1 text/code/config support enabled by default through `SUPPORTED_EXTENSIONS`
+* source-like files such as `.py`, `.js`, `.ts`, `.tsx`, `.sh`, `.bash`, `.zsh`, `.sql`, `.html`, and `.css`
+* structured text and config files such as `.json`, `.yaml`, `.yml`, `.toml`, `.xml`, `.ini`, and `.conf`
 
 PDF extraction is best effort.
 
@@ -513,6 +515,21 @@ For code-like text files, the current implementation is intentionally lightweigh
 * generic fallback heuristics for other code and config-like files
 * no full AST pipeline
 * no language-specific compiler or parser dependency
+
+For structured text formats, extraction stays compact and best effort:
+
+* JSON and TOML are lightly flattened into readable key paths
+* YAML, INI, and CONF files keep a simple key/value view when possible
+* XML gets a small tag-and-text flattening pass
+* HTML gets a lightweight text extraction pass
+* malformed structured files fall back to plain text instead of failing the build
+
+Still not covered in this phase:
+
+* OCR
+* image, audio, or video extraction
+* rich office formats such as `.docx`, `.xlsx`, or `.pptx`
+* deep language-specific parsing pipelines
 
 ---
 

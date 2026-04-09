@@ -9,6 +9,28 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SUPPORTED_EXTENSIONS = (
+    ".txt",
+    ".md",
+    ".pdf",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".sql",
+    ".html",
+    ".css",
+    ".xml",
+    ".ini",
+    ".conf",
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -79,9 +101,7 @@ def load_settings() -> Settings:
         sample_files_per_directory=_read_int("SAMPLE_FILES_PER_DIRECTORY", 5),
         max_text_snippet_chars=_read_int("MAX_TEXT_SNIPPET_CHARS", 1200),
         max_profile_chars=_read_int("MAX_PROFILE_CHARS", 4000),
-        supported_extensions=_read_extensions(
-            os.getenv("SUPPORTED_EXTENSIONS"), (".txt", ".md", ".pdf")
-        ),
+        supported_extensions=_read_extensions(os.getenv("SUPPORTED_EXTENSIONS"), DEFAULT_SUPPORTED_EXTENSIONS),
         excluded_path_segments=_read_csv_lower_tuple(
             os.getenv("EXCLUDED_PATH_SEGMENTS"),
             (
