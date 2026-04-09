@@ -44,6 +44,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include the extracted query profile and top candidate profiles in the output",
     )
 
+    query_batch_parser = subparsers.add_parser(
+        "query-batch",
+        help="Build a placement plan for an incoming directory or single file",
+    )
+    query_batch_parser.add_argument("input_path", help="Path to the input directory or file")
+    query_batch_parser.add_argument(
+        "--top-k", type=int, default=None, help="Override top-k retrieval size"
+    )
+    query_batch_parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="Only inspect files directly inside the input directory",
+    )
+    query_batch_parser.add_argument(
+        "--debug-profiles",
+        action="store_true",
+        help="Include per-file extracted profiles and candidate folder profiles in the output",
+    )
+
     query_parser = subparsers.add_parser(
         "query", help="Search the retrieval core for files and folders"
     )
@@ -86,6 +105,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload = app.query_file_debug_payload(Path(args.file_path), top_k=args.top_k)
             else:
                 payload = app.query_file(Path(args.file_path), top_k=args.top_k).to_dict()
+        elif args.command == "query-batch":
+            if args.debug_profiles:
+                payload = app.query_batch_debug_payload(
+                    Path(args.input_path),
+                    top_k=args.top_k,
+                    recursive=not args.no_recursive,
+                )
+            else:
+                payload = app.query_batch(
+                    Path(args.input_path),
+                    top_k=args.top_k,
+                    recursive=not args.no_recursive,
+                ).to_dict()
         elif args.command == "query":
             payload = app.query(args.text, top_k=args.top_k).to_dict(
                 include_evidence=bool(args.debug_evidence)

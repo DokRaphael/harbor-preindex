@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from harbor_preindex.schemas import IndexBuildSummary, QueryResult, RetrievalResponse
+from harbor_preindex.schemas import BatchQueryResult, IndexBuildSummary, QueryResult, RetrievalResponse
 from harbor_preindex.utils.text import utc_now_iso
 
 
@@ -63,6 +63,35 @@ class SQLiteAuditStore:
                     decision.mode,
                     decision.selected_project_id,
                     decision.confidence,
+                    json.dumps(result.to_dict(), ensure_ascii=False),
+                ),
+            )
+
+    def record_batch_query_run(self, result: BatchQueryResult) -> None:
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                INSERT INTO batch_query_runs (
+                    created_at,
+                    input_path,
+                    mode,
+                    scanned_files,
+                    supported_files,
+                    classified,
+                    needs_review,
+                    skipped,
+                    payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now_iso(),
+                    result.input_path,
+                    result.mode,
+                    result.summary.scanned_files,
+                    result.summary.supported_files,
+                    result.summary.classified,
+                    result.summary.needs_review,
+                    result.summary.skipped,
                     json.dumps(result.to_dict(), ensure_ascii=False),
                 ),
             )
@@ -128,6 +157,22 @@ class SQLiteAuditStore:
                     match_type TEXT NOT NULL,
                     confidence REAL NOT NULL,
                     needs_review INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS batch_query_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    input_path TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    scanned_files INTEGER NOT NULL,
+                    supported_files INTEGER NOT NULL,
+                    classified INTEGER NOT NULL,
+                    needs_review INTEGER NOT NULL,
+                    skipped INTEGER NOT NULL,
                     payload_json TEXT NOT NULL
                 )
                 """
