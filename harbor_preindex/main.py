@@ -15,6 +15,7 @@ from harbor_preindex.logging_config import configure_logging, get_logger
 from harbor_preindex.profiling import ContentExtractor, ProjectProfileBuilder
 from harbor_preindex.retrieval.cards import RetrievalCardBuilder
 from harbor_preindex.retrieval.core import HybridRetrievalCore
+from harbor_preindex.retrieval.query_hints import QueryHintExtractor
 from harbor_preindex.retrieval.service import FileCardRetriever, ProjectRetriever
 from harbor_preindex.semantic import (
     CodeSemanticEnricher,
@@ -68,6 +69,7 @@ class HarborPreindexApp:
     retriever: ProjectRetriever
     file_retriever: FileCardRetriever
     retrieval_core: HybridRetrievalCore
+    query_hint_extractor: QueryHintExtractor
     decision_engine: DecisionEngine
     result_store: JsonResultStore
     audit_store: SQLiteAuditStore
@@ -132,10 +134,12 @@ class HarborPreindexApp:
         )
         retriever = ProjectRetriever(vector_store)
         file_retriever = FileCardRetriever(file_vector_store)
+        query_hint_extractor = QueryHintExtractor()
         retrieval_core = HybridRetrievalCore(
             folder_retriever=retriever,
             file_retriever=file_retriever,
             card_builder=card_builder,
+            query_hint_extractor=query_hint_extractor,
         )
         decision_engine = DecisionEngine(
             llm_backend=llm_backend,
@@ -160,6 +164,7 @@ class HarborPreindexApp:
             retriever=retriever,
             file_retriever=file_retriever,
             retrieval_core=retrieval_core,
+            query_hint_extractor=query_hint_extractor,
             decision_engine=decision_engine,
             result_store=result_store,
             audit_store=audit_store,
@@ -438,6 +443,8 @@ class HarborPreindexApp:
             )
 
         retrieval_query = RetrievalQuery(text=query_text, limit=limit)
+        query_hints = self.query_hint_extractor.extract(query_text)
+        retrieval_query.structured_hints = query_hints
         query_vector = self.embedding_backend.embed_text(query_text)
         retrieval_core = self.retrieval_core
         if not self.file_vector_store.collection_exists():
@@ -445,6 +452,7 @@ class HarborPreindexApp:
                 folder_retriever=self.retriever,
                 file_retriever=None,
                 card_builder=self.card_builder,
+                query_hint_extractor=self.query_hint_extractor,
             )
 
         response = retrieval_core.retrieve(retrieval_query, query_vector)
@@ -464,6 +472,9 @@ class HarborPreindexApp:
                 "top_match_raw_score": (
                     round(response.matches[0].raw_score or 0.0, 4) if response.matches else None
                 ),
+                "query_hint_count": len(query_hints.normalized_terms),
+                "query_time_hints": list(query_hints.time_hints),
+                "query_technical_hints": list(query_hints.technical_hints),
             },
         )
         return response

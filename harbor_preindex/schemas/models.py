@@ -64,11 +64,45 @@ class FolderCard:
 
 
 @dataclass(slots=True)
+class StructuredQueryHints:
+    """Lightweight structured hints extracted from a plain text query."""
+
+    raw_query: str
+    normalized_terms: list[str] = field(default_factory=list)
+    kind_hints: list[str] = field(default_factory=list)
+    entity_terms: list[str] = field(default_factory=list)
+    time_hints: list[str] = field(default_factory=list)
+    topic_hints: list[str] = field(default_factory=list)
+    technical_hints: list[str] = field(default_factory=list)
+    intent_hint: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "raw_query": self.raw_query,
+            "normalized_terms": list(self.normalized_terms),
+        }
+        if self.kind_hints:
+            payload["kind_hints"] = list(self.kind_hints)
+        if self.entity_terms:
+            payload["entity_terms"] = list(self.entity_terms)
+        if self.time_hints:
+            payload["time_hints"] = list(self.time_hints)
+        if self.topic_hints:
+            payload["topic_hints"] = list(self.topic_hints)
+        if self.technical_hints:
+            payload["technical_hints"] = list(self.technical_hints)
+        if self.intent_hint:
+            payload["intent_hint"] = self.intent_hint
+        return payload
+
+
+@dataclass(slots=True)
 class RetrievalQuery:
     """Structured retrieval request."""
 
     text: str
     limit: int
+    structured_hints: StructuredQueryHints | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,9 +118,11 @@ class RetrievalEvidence:
     matched_query_terms: list[str] = field(default_factory=list)
     matched_sources: list[str] = field(default_factory=list)
     source_terms: dict[str, list[str]] = field(default_factory=dict)
+    matched_kind_hints: list[str] = field(default_factory=list)
     matched_topic_hints: list[str] = field(default_factory=list)
     matched_entity_candidates: list[str] = field(default_factory=list)
     matched_time_hints: list[str] = field(default_factory=list)
+    matched_technical_hints: list[str] = field(default_factory=list)
     matched_imports: list[str] = field(default_factory=list)
     matched_symbols: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -101,12 +137,16 @@ class RetrievalEvidence:
             payload["source_terms"] = {
                 source: list(terms) for source, terms in self.source_terms.items()
             }
+        if self.matched_kind_hints:
+            payload["matched_kind_hints"] = list(self.matched_kind_hints)
         if self.matched_topic_hints:
             payload["matched_topic_hints"] = list(self.matched_topic_hints)
         if self.matched_entity_candidates:
             payload["matched_entity_candidates"] = list(self.matched_entity_candidates)
         if self.matched_time_hints:
             payload["matched_time_hints"] = list(self.matched_time_hints)
+        if self.matched_technical_hints:
+            payload["matched_technical_hints"] = list(self.matched_technical_hints)
         if self.matched_imports:
             payload["matched_imports"] = list(self.matched_imports)
         if self.matched_symbols:
@@ -165,6 +205,7 @@ class RetrievalResponse:
     confidence: float
     needs_review: bool
     generated_at: str
+    query_hints: StructuredQueryHints | None = None
 
     def __post_init__(self) -> None:
         if self.match_type not in _VALID_MATCH_TYPES:
@@ -174,7 +215,7 @@ class RetrievalResponse:
             )
 
     def to_dict(self, include_evidence: bool = False) -> dict[str, Any]:
-        return {
+        payload = {
             "query": self.query,
             "match_type": self.match_type,
             "confidence": round(self.confidence, 4),
@@ -182,6 +223,9 @@ class RetrievalResponse:
             "matches": [match.to_dict(include_evidence=include_evidence) for match in self.matches],
             "generated_at": self.generated_at,
         }
+        if include_evidence and self.query_hints is not None:
+            payload["query_hints"] = self.query_hints.to_dict()
+        return payload
 
 
 @dataclass(slots=True)
