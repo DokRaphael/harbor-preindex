@@ -46,7 +46,7 @@ It is a focused **pre-indexing and folder suggestion layer**.
 
 Version 1 is intentionally narrow and practical:
 
-- document-focused only
+- text-first, with semantic enrichment for documents and code-like text files
 - two retrieval levels: existing folder index plus a lightweight file index
 - local crawl of an already-mounted storage root
 - embeddings and LLM decision via configurable Ollama HTTP backends
@@ -64,7 +64,7 @@ The goal is to build a clean, local-first, extensible base.
 The query pipeline is explicit and built around a signal extraction layer:
 
 ```text
-file -> SignalExtractor -> ExtractedSignal -> embedding -> retrieval -> decision
+file -> SignalExtractor -> ExtractedSignal -> SemanticEnricher -> EnrichedSignal -> embedding -> retrieval -> decision
 ```
 
 In practice, the workflow looks like this:
@@ -78,7 +78,7 @@ In practice, the workflow looks like this:
 7. retrieve the top matching folders
 8. either auto-select the best one or ask for review if confidence is too low
 
-Only a document extractor is implemented today, but the architecture is designed so image, audio, or video extractors can be added later without changing the retrieval and decision core.
+Signal extraction is still intentionally lightweight, but file cards are now enriched with a semantic layer before embedding. This enrichment keeps the pipeline local-first and deterministic while giving retrieval a better compact representation of documents and code-like text files.
 
 The retrieval core now also supports plain text search such as:
 
@@ -120,6 +120,7 @@ It is about **preparing a filesystem for semantic retrieval and assisted organiz
 * detect project folders with a simple heuristic
 * build a lightweight text profile per folder
 * build a lightweight semantic card per supported file
+* enrich file signals with semantic hints before building file cards
 * generate embeddings in batches
 * store folder and file indexes locally in Qdrant
 
@@ -155,6 +156,7 @@ Main modules:
 * `harbor_preindex/crawler/` — NAS or filesystem scan and folder sampling
 * `harbor_preindex/profiling/` — lightweight text extraction and folder profile building
 * `harbor_preindex/signals/` — `SignalExtractor` abstraction and normalized extracted signals
+* `harbor_preindex/semantic/` — lightweight semantic enrichment for documents and code-like text files
 * `harbor_preindex/embedding/` — `EmbeddingBackend` abstraction and Ollama embedding backend
 * `harbor_preindex/llm/` — `LLMBackend` abstraction and Ollama LLM backend
 * `harbor_preindex/storage/` — local Qdrant, JSON results, SQLite audit
@@ -438,9 +440,9 @@ This keeps deployment simple while remaining compatible with a future move to re
 Current extraction support:
 
 * filenames
-* `.txt`
-* `.md`
+* text documents such as `.txt` and `.md`
 * text-based PDF via `pypdf`
+* code-like text files when their extensions are included in `SUPPORTED_EXTENSIONS`
 
 PDF extraction is best effort.
 
@@ -449,6 +451,22 @@ If a PDF is corrupted, encrypted, or malformed:
 * profiling continues with the filename only
 * a warning is logged
 * PDF extraction successes and failures are reported in application logs during indexing
+
+The semantic enrichment layer does not perform OCR, deep parsing, or mandatory LLM classification. It adds compact hints such as:
+
+* document or code-like kind hints
+* topic hints
+* entity candidates
+* time hints
+* structural hints
+* a short functional summary
+
+For code-like text files, the current implementation is intentionally lightweight:
+
+* good support for Python-style imports and symbols
+* generic fallback heuristics for other code and config-like files
+* no full AST pipeline
+* no language-specific compiler or parser dependency
 
 ---
 
