@@ -6,6 +6,7 @@ from harbor_preindex.retrieval.core import HybridRetrievalCore
 from harbor_preindex.schemas import (
     FileSearchCandidate,
     FolderCard,
+    RetrievalEvidence,
     RetrievalMatch,
     RetrievalQuery,
     RetrievalResponse,
@@ -86,6 +87,7 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         self.assertFalse(response.needs_review)
         self.assertEqual(response.matches[0].target_kind, "file")
         self.assertEqual(response.matches[0].label, "Raphael_Dok_CV.txt")
+        self.assertEqual(response.matches[0].why, "matched query terms in filename")
         self.assertAlmostEqual(response.matches[0].raw_score or 0.0, 0.93, places=4)
         self.assertNotEqual(response.matches[0].score, response.matches[0].raw_score)
 
@@ -117,6 +119,10 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         self.assertEqual(response.match_type, "folder_zone")
         self.assertFalse(response.needs_review)
         self.assertEqual(response.matches[0].target_kind, "folder")
+        self.assertEqual(
+            response.matches[0].why,
+            "sample filenames and folder profile overlap with query",
+        )
 
     def test_uses_calibrated_scores_instead_of_raw_cross_index_scores(self) -> None:
         core = HybridRetrievalCore(
@@ -160,6 +166,95 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         self.assertLess(response.matches[0].raw_score or 0.0, response.matches[1].raw_score or 0.0)
         self.assertGreater(response.matches[0].score, response.matches[1].score)
 
+    def test_document_match_exposes_compact_semantic_evidence(self) -> None:
+        core = HybridRetrievalCore(
+            folder_retriever=StubFolderRetriever([]),
+            file_retriever=StubFileRetriever(
+                [
+                    FileSearchCandidate(
+                        file_id="file-3",
+                        path="/tmp/storage-root/admin/factures/amazon_invoice_2025.txt",
+                        filename="amazon_invoice_2025.txt",
+                        extension=".txt",
+                        parent_path="/tmp/storage-root/admin/factures",
+                        modality="document",
+                        score=0.89,
+                        text_for_embedding="Amazon invoice 2025",
+                        metadata={
+                            "text_excerpt": "Amazon order invoice total EUR 23.90 2025",
+                            "functional_summary": "Transactional document with named entities such as Amazon and time hints such as 2025.",
+                            "semantic_hints": {
+                                "topic_hints": ["amazon", "invoice"],
+                                "entity_candidates": ["Amazon"],
+                                "time_hints": ["2025"],
+                            },
+                        },
+                    )
+                ]
+            ),
+            card_builder=StubCardBuilder(),
+        )
+
+        response = core.retrieve(
+            RetrievalQuery(text="where are my Amazon invoices from 2025?", limit=5),
+            [0.1, 0.2],
+        )
+
+        match = response.matches[0]
+        self.assertEqual(match.why, "entity candidate and time hint align with the query")
+        self.assertIsNotNone(match.evidence)
+        assert match.evidence is not None
+        self.assertEqual(match.evidence.matched_entity_candidates, ["Amazon"])
+        self.assertEqual(match.evidence.matched_time_hints, ["2025"])
+        self.assertIn("filename", match.evidence.matched_sources)
+        self.assertIn("semantic_hints", match.evidence.matched_sources)
+        self.assertIn("amazon", match.evidence.source_terms["filename"])
+        self.assertIn("2025", match.evidence.source_terms["semantic_hints"])
+
+    def test_code_match_exposes_import_and_symbol_evidence(self) -> None:
+        core = HybridRetrievalCore(
+            folder_retriever=StubFolderRetriever([]),
+            file_retriever=StubFileRetriever(
+                [
+                    FileSearchCandidate(
+                        file_id="file-4",
+                        path="/tmp/storage-root/projects/neuraloop/qdrant_cli.py",
+                        filename="qdrant_cli.py",
+                        extension=".py",
+                        parent_path="/tmp/storage-root/projects/neuraloop",
+                        modality="code",
+                        score=0.87,
+                        text_for_embedding="Qdrant CLI module",
+                        metadata={
+                            "functional_summary": "Python code module covering vector storage, retrieval, and CLI flows.",
+                            "semantic_hints": {
+                                "topic_hints": ["vector_storage", "retrieval", "cli", "qdrant"],
+                                "entity_candidates": [],
+                                "time_hints": [],
+                            },
+                            "imports": ["qdrant_client", "argparse"],
+                            "symbols": ["build_parser", "query_qdrant"],
+                        },
+                    )
+                ]
+            ),
+            card_builder=StubCardBuilder(),
+        )
+
+        response = core.retrieve(
+            RetrievalQuery(text="where is the code that talks to qdrant?", limit=5),
+            [0.1, 0.2],
+        )
+
+        match = response.matches[0]
+        self.assertEqual(match.why, "code imports and functional summary overlap with query topics")
+        self.assertIsNotNone(match.evidence)
+        assert match.evidence is not None
+        self.assertEqual(match.evidence.matched_imports, ["qdrant_client"])
+        self.assertIn("semantic_hints", match.evidence.matched_sources)
+        self.assertIn("imports", match.evidence.matched_sources)
+        self.assertIn("qdrant", match.evidence.source_terms["imports"])
+
     def test_retrieval_contract_rejects_unknown_literals(self) -> None:
         with self.assertRaises(ValueError):
             RetrievalMatch(
@@ -178,6 +273,11 @@ class HybridRetrievalCoreTests(unittest.TestCase):
             score=0.7,
             label="file.txt",
             why="ok",
+            evidence=RetrievalEvidence(
+                matched_query_terms=["file"],
+                matched_sources=["filename"],
+                source_terms={"filename": ["file"]},
+            ),
             raw_score=0.8,
             decision_score=0.7,
         )
@@ -203,6 +303,32 @@ class HybridRetrievalCoreTests(unittest.TestCase):
                 "why": "ok",
             },
         )
+        self.assertEqual(
+            valid_match.to_dict(include_evidence=True),
+            {
+                "target_kind": "file",
+                "target_id": "file-1",
+                "path": "/tmp/file.txt",
+                "score": 0.7,
+                "label": "file.txt",
+                "why": "ok",
+                "evidence": {
+                    "matched_query_terms": ["file"],
+                    "matched_sources": ["filename"],
+                    "source_terms": {"filename": ["file"]},
+                },
+            },
+        )
+        response = RetrievalResponse(
+            query="file",
+            match_type="likely_file",
+            matches=[valid_match],
+            confidence=0.7,
+            needs_review=False,
+            generated_at="2026-04-08T00:00:00Z",
+        )
+        self.assertNotIn("evidence", response.to_dict()["matches"][0])
+        self.assertIn("evidence", response.to_dict(include_evidence=True)["matches"][0])
 
 
 if __name__ == "__main__":

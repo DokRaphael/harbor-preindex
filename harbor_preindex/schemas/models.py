@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, get_args
 
@@ -78,6 +78,45 @@ class RetrievalQuery:
 
 
 @dataclass(slots=True)
+class RetrievalEvidence:
+    """Compact explanation metadata for a retrieval match."""
+
+    matched_query_terms: list[str] = field(default_factory=list)
+    matched_sources: list[str] = field(default_factory=list)
+    source_terms: dict[str, list[str]] = field(default_factory=dict)
+    matched_topic_hints: list[str] = field(default_factory=list)
+    matched_entity_candidates: list[str] = field(default_factory=list)
+    matched_time_hints: list[str] = field(default_factory=list)
+    matched_imports: list[str] = field(default_factory=list)
+    matched_symbols: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if self.matched_query_terms:
+            payload["matched_query_terms"] = list(self.matched_query_terms)
+        if self.matched_sources:
+            payload["matched_sources"] = list(self.matched_sources)
+        if self.source_terms:
+            payload["source_terms"] = {
+                source: list(terms) for source, terms in self.source_terms.items()
+            }
+        if self.matched_topic_hints:
+            payload["matched_topic_hints"] = list(self.matched_topic_hints)
+        if self.matched_entity_candidates:
+            payload["matched_entity_candidates"] = list(self.matched_entity_candidates)
+        if self.matched_time_hints:
+            payload["matched_time_hints"] = list(self.matched_time_hints)
+        if self.matched_imports:
+            payload["matched_imports"] = list(self.matched_imports)
+        if self.matched_symbols:
+            payload["matched_symbols"] = list(self.matched_symbols)
+        if self.notes:
+            payload["notes"] = list(self.notes)
+        return payload
+
+
+@dataclass(slots=True)
 class RetrievalMatch:
     """A file or folder candidate returned by retrieval."""
 
@@ -87,6 +126,7 @@ class RetrievalMatch:
     score: float
     label: str
     why: str
+    evidence: RetrievalEvidence | None = None
     raw_score: float | None = None
     decision_score: float | None = None
 
@@ -101,8 +141,8 @@ class RetrievalMatch:
         if self.decision_score is None:
             self.decision_score = self.score
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, include_evidence: bool = False) -> dict[str, Any]:
+        payload = {
             "target_kind": self.target_kind,
             "target_id": self.target_id,
             "path": self.path,
@@ -110,6 +150,9 @@ class RetrievalMatch:
             "label": self.label,
             "why": self.why,
         }
+        if include_evidence and self.evidence is not None:
+            payload["evidence"] = self.evidence.to_dict()
+        return payload
 
 
 @dataclass(slots=True)
@@ -130,13 +173,13 @@ class RetrievalResponse:
                 f"expected one of {sorted(_VALID_MATCH_TYPES)}"
             )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, include_evidence: bool = False) -> dict[str, Any]:
         return {
             "query": self.query,
             "match_type": self.match_type,
             "confidence": round(self.confidence, 4),
             "needs_review": self.needs_review,
-            "matches": [match.to_dict() for match in self.matches],
+            "matches": [match.to_dict(include_evidence=include_evidence) for match in self.matches],
             "generated_at": self.generated_at,
         }
 
