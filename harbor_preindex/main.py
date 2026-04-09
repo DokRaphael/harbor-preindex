@@ -60,6 +60,16 @@ from harbor_preindex.utils.text import utc_now_iso
 logger = get_logger(__name__)
 
 
+class BatchFileProcessingError(Exception):
+    """Expected file-level failure during a batch placement run."""
+
+    def __init__(self, source_path: Path, reason: str, error: Exception) -> None:
+        self.source_path = str(source_path)
+        self.reason = reason
+        self.error = error
+        super().__init__(f"{reason}: {error}")
+
+
 @dataclass(slots=True)
 class HarborPreindexApp:
     """Main application object used by the CLI."""
@@ -563,20 +573,20 @@ class HarborPreindexApp:
         for file_path in supported_paths:
             try:
                 result, query_context, signal = self._compute_query_result_for_limit(file_path, limit)
-            except (OSError, UnicodeError, ValueError) as exc:
+            except BatchFileProcessingError as exc:
                 skipped.append(
                     BatchSkippedItem(
-                        source_path=str(file_path),
-                        reason="unreadable_or_malformed",
-                        error=str(exc),
+                        source_path=exc.source_path,
+                        reason=exc.reason,
+                        error=str(exc.error),
                     )
                 )
                 logger.warning(
                     "batch_query_file_skipped",
                     extra={
-                        "source_path": str(file_path),
-                        "reason": "unreadable_or_malformed",
-                        "error": str(exc),
+                        "source_path": exc.source_path,
+                        "reason": exc.reason,
+                        "error": str(exc.error),
                     },
                 )
                 continue
@@ -647,12 +657,7 @@ class HarborPreindexApp:
         file_path: Path,
         limit: int,
     ) -> tuple[QueryResult, FileQueryContext, ExtractedSignal]:
-        self._validate_query_file_input(file_path)
-        self._ensure_query_collection_exists()
-
-        signal_extractor = self.signal_registry.resolve(file_path)
-        signal = signal_extractor.extract(file_path)
-        query_context = self.profile_builder.build_query_context_from_signal(file_path, signal)
+        query_context, signal = self._prepare_query_file(file_path)
         embedding = self.embedding_backend.embed_text(signal.text_for_embedding)
         candidates = self.retriever.retrieve(embedding, limit)
         decision = self.decision_engine.decide(query_context, candidates)
@@ -667,6 +672,26 @@ class HarborPreindexApp:
             query_context,
             signal,
         )
+
+    def _prepare_query_file(
+        self,
+        file_path: Path,
+    ) -> tuple[FileQueryContext, ExtractedSignal]:
+        self._validate_query_file_input(file_path)
+        self._ensure_query_collection_exists()
+
+        try:
+            signal_extractor = self.signal_registry.resolve(file_path)
+            signal = signal_extractor.extract(file_path)
+        except (OSError, UnicodeError) as exc:
+            raise BatchFileProcessingError(
+                source_path=file_path,
+                reason="unreadable_or_malformed",
+                error=exc,
+            ) from exc
+
+        query_context = self.profile_builder.build_query_context_from_signal(file_path, signal)
+        return query_context, signal
 
     def _resolve_query_limit(self, top_k: int | None) -> int:
         limit = top_k if top_k is not None else self.settings.top_k
@@ -756,16 +781,15 @@ class HarborPreindexApp:
 
         decision = result.decision
         if decision.mode == "auto_top1" and decision.selected_path:
-            return "selected folder clearly led the semantic ranking"
+            return "top candidate score gate passed for the selected folder"
         if decision.mode == "llm_rerank" and decision.selected_path:
-            return "top candidates were close; reranking selected the most plausible folder"
+            return "reranking selected the most plausible folder among close candidates"
         if decision.reason == "llm_error_or_invalid_response":
             return "automatic routing was inconclusive and reranking failed"
-
-        top_score = result.top_candidates[0].score
-        second_score = result.top_candidates[1].score if len(result.top_candidates) > 1 else 0.0
-        if (top_score - second_score) < 0.08:
-            return "ambiguous semantic match across multiple candidate folders"
+        if decision.reason == "no_candidates_found":
+            return "no candidate folder matched the incoming file"
+        if decision.reason:
+            return f"review requested: {decision.reason.replace('_', ' ')}"
         return "incoming file signal remains ambiguous across candidate folders"
 
     def _query_debug_payload_data(

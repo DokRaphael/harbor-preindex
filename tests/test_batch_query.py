@@ -6,6 +6,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 def _install_dependency_stubs() -> None:
@@ -233,19 +234,35 @@ class StubCollectionStore:
 
 
 class StubResultStore:
+    def __init__(self) -> None:
+        self.batch_result: object | None = None
+        self.query_result: object | None = None
+        self.save_batch_calls = 0
+        self.save_query_calls = 0
+
     def save_batch_query_result(self, result: object) -> None:
         self.batch_result = result
+        self.save_batch_calls += 1
 
     def save_query_result(self, result: object) -> None:
         self.query_result = result
+        self.save_query_calls += 1
 
 
 class StubAuditStore:
+    def __init__(self) -> None:
+        self.batch_result: object | None = None
+        self.query_result: object | None = None
+        self.batch_query_calls = 0
+        self.query_run_calls = 0
+
     def record_batch_query_run(self, result: object) -> None:
         self.batch_result = result
+        self.batch_query_calls += 1
 
     def record_query_run(self, result: object) -> None:
         self.query_result = result
+        self.query_run_calls += 1
 
 
 class BatchQueryTests(unittest.TestCase):
@@ -253,6 +270,8 @@ class BatchQueryTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.base_path = Path(self.temp_dir.name)
         extractor = StubSignalExtractor(broken_names={"broken.txt"})
+        self.result_store = StubResultStore()
+        self.audit_store = StubAuditStore()
         self.app = HarborPreindexApp(
             settings=SimpleNamespace(
                 top_k=5,
@@ -272,8 +291,8 @@ class BatchQueryTests(unittest.TestCase):
             retrieval_core=SimpleNamespace(),
             query_hint_extractor=SimpleNamespace(),
             decision_engine=StubDecisionEngine(),
-            result_store=StubResultStore(),
-            audit_store=StubAuditStore(),
+            result_store=self.result_store,
+            audit_store=self.audit_store,
         )
 
     def tearDown(self) -> None:
@@ -311,6 +330,10 @@ class BatchQueryTests(unittest.TestCase):
         self.assertEqual(len(result.review_queue), 1)
         self.assertEqual(result.review_queue[0].source_path, str(batch_dir / "notes.txt"))
         self.assertEqual(result.skipped[0].reason, "unsupported_extension")
+        self.assertEqual(self.result_store.save_batch_calls, 1)
+        self.assertEqual(self.result_store.save_query_calls, 0)
+        self.assertEqual(self.audit_store.batch_query_calls, 1)
+        self.assertEqual(self.audit_store.query_run_calls, 0)
 
     def test_query_batch_no_recursive_only_scans_top_level_files(self) -> None:
         batch_dir = self.base_path / "incoming"
@@ -338,6 +361,108 @@ class BatchQueryTests(unittest.TestCase):
         self.assertEqual(result.summary.skipped, 1)
         self.assertEqual(result.skipped[0].reason, "unreadable_or_malformed")
         self.assertIn("unable to read file", result.skipped[0].error or "")
+
+    def test_query_batch_single_file_input_uses_single_file_mode(self) -> None:
+        input_file = self.base_path / "single.txt"
+        self._write_text(input_file, "single file")
+
+        result = self.app.query_batch(input_file)
+
+        self.assertEqual(result.mode, "single_file")
+        self.assertEqual(result.summary.to_dict(), {
+            "scanned_files": 1,
+            "supported_files": 1,
+            "classified": 1,
+            "needs_review": 0,
+            "skipped": 0,
+        })
+        self.assertEqual(len(result.placements), 1)
+        self.assertEqual(result.placements[0].source_path, str(input_file))
+
+    def test_query_file_non_regression_keeps_existing_behavior_and_persistence(self) -> None:
+        input_file = self.base_path / "single.txt"
+        self._write_text(input_file, "single file")
+
+        result = self.app.query_file(input_file)
+
+        self.assertEqual(result.input_file, str(input_file))
+        self.assertEqual(result.decision.mode, "auto_top1")
+        self.assertEqual(result.decision.selected_path, "/nas/projects/sample/docs")
+        self.assertEqual(len(result.top_candidates), 1)
+        self.assertEqual(self.result_store.save_query_calls, 1)
+        self.assertEqual(self.result_store.save_batch_calls, 0)
+        self.assertEqual(self.audit_store.query_run_calls, 1)
+        self.assertEqual(self.audit_store.batch_query_calls, 0)
+
+    def test_query_batch_debug_payload_includes_per_file_debug(self) -> None:
+        batch_dir = self.base_path / "incoming"
+        self._write_text(batch_dir / "amazon_jan_2025.txt", "amazon january invoice")
+        self._write_text(batch_dir / "notes.txt", "misc notes")
+
+        payload = self.app.query_batch_debug_payload(batch_dir)
+
+        self.assertEqual(payload["mode"], "recursive")
+        self.assertEqual(payload["summary"]["classified"], 1)
+        self.assertEqual(payload["summary"]["needs_review"], 1)
+        self.assertIn("debug", payload["placements"][0])
+        self.assertIn("signal_modality", payload["placements"][0]["debug"])
+        self.assertIn("query_text_profile", payload["placements"][0]["debug"])
+        self.assertIn("candidate_text_profiles", payload["placements"][0]["debug"])
+        self.assertIn("debug", payload["review_queue"][0])
+
+    def test_reviewed_items_are_not_grouped_as_classified_destinations(self) -> None:
+        batch_dir = self.base_path / "incoming"
+        reviewed_file = batch_dir / "notes.txt"
+        self._write_text(batch_dir / "amazon_jan_2025.txt", "amazon january invoice")
+        self._write_text(reviewed_file, "misc notes")
+
+        result = self.app.query_batch(batch_dir)
+
+        grouped_members = {
+            member
+            for group in result.groups
+            for member in group.members
+        }
+        self.assertEqual(result.review_queue[0].source_path, str(reviewed_file))
+        self.assertNotIn(str(reviewed_file), grouped_members)
+
+    def test_query_batch_ordering_is_deterministic(self) -> None:
+        batch_dir = self.base_path / "incoming"
+        self._write_text(batch_dir / "notes.txt", "misc notes")
+        self._write_text(batch_dir / "amazon_jan_2025.txt", "amazon january invoice")
+        self._write_text(batch_dir / "amazon_feb_2025.txt", "amazon february invoice")
+        self._write_text(batch_dir / "zzz.png", "unsupported")
+        self._write_text(batch_dir / "aaa.png", "unsupported")
+
+        result = self.app.query_batch(batch_dir)
+
+        self.assertEqual(
+            [placement.source_path for placement in result.placements],
+            [
+                str(batch_dir / "amazon_feb_2025.txt"),
+                str(batch_dir / "amazon_jan_2025.txt"),
+                str(batch_dir / "notes.txt"),
+            ],
+        )
+        self.assertEqual(
+            [item.source_path for item in result.skipped],
+            [
+                str(batch_dir / "aaa.png"),
+                str(batch_dir / "zzz.png"),
+            ],
+        )
+
+    def test_query_batch_internal_value_error_is_not_downgraded_to_skipped(self) -> None:
+        batch_dir = self.base_path / "incoming"
+        self._write_text(batch_dir / "amazon_jan_2025.txt", "amazon january invoice")
+
+        with patch.object(
+            self.app.profile_builder,
+            "build_query_context_from_signal",
+            side_effect=ValueError("internal bug"),
+        ):
+            with self.assertRaises(ValueError):
+                self.app.query_batch(batch_dir)
 
     def test_query_batch_non_existent_path_raises_clear_error(self) -> None:
         missing_path = self.base_path / "missing"
