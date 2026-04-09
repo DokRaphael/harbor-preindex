@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from harbor_preindex.schemas import IndexBuildSummary, QueryResult
+from harbor_preindex.schemas import IndexBuildSummary, QueryResult, RetrievalResponse
 from harbor_preindex.utils.text import utc_now_iso
 
 
@@ -67,6 +67,29 @@ class SQLiteAuditStore:
                 ),
             )
 
+    def record_retrieval_run(self, response: RetrievalResponse) -> None:
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                INSERT INTO retrieval_runs (
+                    created_at,
+                    query_text,
+                    match_type,
+                    confidence,
+                    needs_review,
+                    payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now_iso(),
+                    response.query,
+                    response.match_type,
+                    response.confidence,
+                    int(response.needs_review),
+                    json.dumps(response.to_dict(), ensure_ascii=False),
+                ),
+            )
+
     def _init_db(self) -> None:
         with sqlite3.connect(self.path) as connection:
             connection.execute(
@@ -92,6 +115,19 @@ class SQLiteAuditStore:
                     decision_mode TEXT NOT NULL,
                     selected_project_id TEXT,
                     confidence REAL NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS retrieval_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    query_text TEXT NOT NULL,
+                    match_type TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    needs_review INTEGER NOT NULL,
                     payload_json TEXT NOT NULL
                 )
                 """

@@ -26,6 +26,7 @@ class Settings:
     qdrant_mode: str
     qdrant_path: Path
     qdrant_collection: str
+    qdrant_file_collection: str
     top_k: int
     sample_files_per_directory: int
     max_text_snippet_chars: int
@@ -73,6 +74,7 @@ def load_settings() -> Settings:
         qdrant_mode=_read_qdrant_mode(_read_str("QDRANT_MODE", "local")),
         qdrant_path=_resolve_path(_read_str("QDRANT_PATH", str(harbor_data_dir / "qdrant"))),
         qdrant_collection=_read_str("QDRANT_COLLECTION", "projects"),
+        qdrant_file_collection=_read_str("QDRANT_FILE_COLLECTION", "files"),
         top_k=_read_int("TOP_K", 5),
         sample_files_per_directory=_read_int("SAMPLE_FILES_PER_DIRECTORY", 5),
         max_text_snippet_chars=_read_int("MAX_TEXT_SNIPPET_CHARS", 1200),

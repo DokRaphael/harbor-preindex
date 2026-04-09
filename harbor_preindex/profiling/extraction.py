@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from pypdf import PdfReader
-
 from harbor_preindex.logging_config import get_logger
 from harbor_preindex.utils.text import normalize_text, truncate_text
 
@@ -76,6 +74,8 @@ class ContentExtractor:
         return truncate_text(normalize_text(content), self.max_chars)
 
     def _extract_pdf(self, file_path: Path) -> str:
+        from pypdf import PdfReader
+
         reader = PdfReader(str(file_path))
         parts: list[str] = []
         page_count = min(len(reader.pages), self.max_pdf_pages)

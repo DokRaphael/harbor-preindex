@@ -13,19 +13,32 @@ from harbor_preindex.embedding import OllamaEmbeddingBackend
 from harbor_preindex.llm import OllamaLLMBackend
 from harbor_preindex.logging_config import configure_logging, get_logger
 from harbor_preindex.profiling import ContentExtractor, ProjectProfileBuilder
-from harbor_preindex.retrieval import ProjectRetriever
+from harbor_preindex.retrieval.cards import RetrievalCardBuilder
+from harbor_preindex.retrieval.core import HybridRetrievalCore
+from harbor_preindex.retrieval.service import FileCardRetriever, ProjectRetriever
 from harbor_preindex.schemas import (
+    DiscoveredProject,
+    FileCard,
     FileQueryContext,
     IndexBuildSummary,
+    IndexedFileCard,
     IndexedProject,
     ProjectProfile,
     QueryResult,
+    RetrievalQuery,
+    RetrievalResponse,
 )
 from harbor_preindex.settings import Settings, load_settings
 from harbor_preindex.signals.document import DocumentSignalExtractor
 from harbor_preindex.signals.models import ExtractedSignal
 from harbor_preindex.signals.registry import SignalExtractorRegistry
-from harbor_preindex.storage import JsonResultStore, QdrantProjectStore, SQLiteAuditStore
+from harbor_preindex.storage import (
+    JsonResultStore,
+    QdrantFileStore,
+    QdrantProjectStore,
+    SQLiteAuditStore,
+    create_local_qdrant_client,
+)
 from harbor_preindex.utils.iterables import chunked
 from harbor_preindex.utils.ollama_api import OllamaApiClient, OllamaApiError
 from harbor_preindex.utils.text import utc_now_iso
@@ -41,11 +54,15 @@ class HarborPreindexApp:
     crawler: ProjectCrawler
     profile_builder: ProjectProfileBuilder
     signal_registry: SignalExtractorRegistry
+    card_builder: RetrievalCardBuilder
     embedding_backend: OllamaEmbeddingBackend
     llm_backend: OllamaLLMBackend
     ollama_client: OllamaApiClient
     vector_store: QdrantProjectStore
+    file_vector_store: QdrantFileStore
     retriever: ProjectRetriever
+    file_retriever: FileCardRetriever
+    retrieval_core: HybridRetrievalCore
     decision_engine: DecisionEngine
     result_store: JsonResultStore
     audit_store: SQLiteAuditStore
@@ -69,6 +86,11 @@ class HarborPreindexApp:
                 )
             ]
         )
+        card_builder = RetrievalCardBuilder(
+            root_path=settings.harbor_root,
+            signal_registry=signal_registry,
+            max_profile_chars=settings.max_profile_chars,
+        )
         crawler = ProjectCrawler(
             root_path=settings.harbor_root,
             sample_files_per_directory=settings.sample_files_per_directory,
@@ -83,12 +105,26 @@ class HarborPreindexApp:
         )
         embedding_backend = OllamaEmbeddingBackend(ollama_client, settings.embedding_model)
         llm_backend = OllamaLLMBackend(ollama_client, settings.llm_model)
+        qdrant_client = create_local_qdrant_client(settings.qdrant_path)
         vector_store = QdrantProjectStore(
             settings.qdrant_mode,
             settings.qdrant_path,
             settings.qdrant_collection,
+            client=qdrant_client,
+        )
+        file_vector_store = QdrantFileStore(
+            settings.qdrant_mode,
+            settings.qdrant_path,
+            settings.qdrant_file_collection,
+            client=qdrant_client,
         )
         retriever = ProjectRetriever(vector_store)
+        file_retriever = FileCardRetriever(file_vector_store)
+        retrieval_core = HybridRetrievalCore(
+            folder_retriever=retriever,
+            file_retriever=file_retriever,
+            card_builder=card_builder,
+        )
         decision_engine = DecisionEngine(
             llm_backend=llm_backend,
             auto_accept_score=settings.auto_accept_score,
@@ -103,11 +139,15 @@ class HarborPreindexApp:
             crawler=crawler,
             profile_builder=profile_builder,
             signal_registry=signal_registry,
+            card_builder=card_builder,
             embedding_backend=embedding_backend,
             llm_backend=llm_backend,
             ollama_client=ollama_client,
             vector_store=vector_store,
+            file_vector_store=file_vector_store,
             retriever=retriever,
+            file_retriever=file_retriever,
+            retrieval_core=retrieval_core,
             decision_engine=decision_engine,
             result_store=result_store,
             audit_store=audit_store,
@@ -131,12 +171,15 @@ class HarborPreindexApp:
             self.profile_builder.build_project_profile(project)
             for project in discovered_projects
         ]
+        file_cards, skipped_file_cards = self._build_file_cards(discovered_projects)
         pdf_stats = self.profile_builder.extractor.pdf_stats()
 
         logger.info(
             "profiling_finished",
             extra={
                 "project_profiles": len(profiles),
+                "file_cards": len(file_cards),
+                "skipped_file_cards": skipped_file_cards,
                 "pdf_extraction_successes": pdf_stats.success_count,
                 "pdf_extraction_failures": pdf_stats.failure_count,
             },
@@ -152,13 +195,25 @@ class HarborPreindexApp:
         elif recreate:
             self.vector_store.clear_collection()
 
+        if file_cards:
+            indexed_file_cards = self._embed_file_cards_in_batches(file_cards)
+            self.file_vector_store.ensure_collection(
+                len(indexed_file_cards[0].embedding),
+                recreate=recreate,
+            )
+            self.file_vector_store.upsert_file_cards(indexed_file_cards)
+        elif recreate:
+            self.file_vector_store.clear_collection()
+
         summary = IndexBuildSummary(
             root_path=str(self.settings.harbor_root),
             collection=self.settings.qdrant_collection,
             indexed_projects=len(profiles),
+            indexed_files=len(file_cards),
             scanned_directories=visited_directories,
             recreated_collection=recreate,
             generated_at=utc_now_iso(),
+            file_collection=self.settings.qdrant_file_collection,
         )
         self.result_store.save_index_summary(summary)
         self.audit_store.record_index_run(summary)
@@ -167,12 +222,37 @@ class HarborPreindexApp:
             "build_index_finished",
             extra={
                 "indexed_projects": summary.indexed_projects,
+                "indexed_files": summary.indexed_files,
+                "skipped_file_cards": skipped_file_cards,
                 "scanned_directories": summary.scanned_directories,
                 "pdf_extraction_successes": pdf_stats.success_count,
                 "pdf_extraction_failures": pdf_stats.failure_count,
             },
         )
         return summary
+
+    def _build_file_cards(
+        self,
+        discovered_projects: list[DiscoveredProject],
+    ) -> tuple[list[FileCard], int]:
+        """Build file cards for supported files discovered in project directories."""
+
+        file_cards: list[FileCard] = []
+        skipped_file_cards = 0
+        for project in discovered_projects:
+            for file_path in self.crawler.list_project_files(project):
+                try:
+                    file_cards.append(self.card_builder.build_file_card(file_path))
+                except Exception as exc:
+                    skipped_file_cards += 1
+                    logger.warning(
+                        "file_card_build_skipped",
+                        extra={
+                            "file_path": str(file_path),
+                            "error": str(exc),
+                        },
+                    )
+        return file_cards, skipped_file_cards
 
     def _embed_profiles_in_batches(self, profiles: list[ProjectProfile]) -> list[IndexedProject]:
         """Embed project profiles in small batches to avoid Ollama timeouts."""
@@ -237,6 +317,69 @@ class HarborPreindexApp:
 
         return indexed_projects
 
+    def _embed_file_cards_in_batches(self, file_cards: list[FileCard]) -> list[IndexedFileCard]:
+        """Embed file cards in small batches to avoid Ollama timeouts."""
+
+        total_cards = len(file_cards)
+        batch_size = self.settings.embedding_batch_size
+        total_batches = ceil(total_cards / batch_size)
+
+        logger.info(
+            "file_embedding_batches_started",
+            extra={
+                "total_cards": total_cards,
+                "batch_size": batch_size,
+                "total_batches": total_batches,
+            },
+        )
+
+        indexed_cards: list[IndexedFileCard] = []
+        for batch_number, card_batch in enumerate(chunked(file_cards, batch_size), start=1):
+            logger.info(
+                "file_embedding_batch_started",
+                extra={
+                    "batch_number": batch_number,
+                    "total_batches": total_batches,
+                    "batch_size": len(card_batch),
+                },
+            )
+            try:
+                embeddings = self.embedding_backend.embed_texts(
+                    [card.text_for_embedding for card in card_batch]
+                )
+                batch_indexed_cards = [
+                    IndexedFileCard(card=card, embedding=embedding)
+                    for card, embedding in zip(card_batch, embeddings, strict=True)
+                ]
+            except (OllamaApiError, ValueError) as exc:
+                logger.error(
+                    "file_embedding_batch_failed",
+                    extra={
+                        "batch_number": batch_number,
+                        "total_batches": total_batches,
+                        "batch_size": len(card_batch),
+                        "error": str(exc),
+                    },
+                )
+                raise RuntimeError(
+                    f"file embedding batch {batch_number}/{total_batches} failed after "
+                    f"{self.settings.ollama_max_retries + 1} attempt(s)"
+                ) from exc
+
+            indexed_cards.extend(batch_indexed_cards)
+            logger.info(
+                "file_embedding_batch_finished",
+                extra={
+                    "batch_number": batch_number,
+                    "total_batches": total_batches,
+                    "batch_size": len(card_batch),
+                    "embedded_cards": len(indexed_cards),
+                    "total_cards": total_cards,
+                },
+            )
+
+        return indexed_cards
+
     def query_file(self, file_path: Path, top_k: int | None = None) -> QueryResult:
         """Route a new file against the existing project index."""
 
@@ -264,6 +407,54 @@ class HarborPreindexApp:
             ],
         }
         return payload
+
+    def query(self, text: str, top_k: int | None = None) -> RetrievalResponse:
+        """Run the hybrid retrieval core for a plain text query."""
+
+        query_text = text.strip()
+        if not query_text:
+            raise ValueError("query text must not be empty")
+
+        limit = top_k if top_k is not None else self.settings.top_k
+        if limit <= 0:
+            raise ValueError("top_k must be greater than zero")
+
+        if not self.vector_store.collection_exists():
+            raise RuntimeError(
+                f"Qdrant collection '{self.settings.qdrant_collection}' does not exist; "
+                "run `build-index` first"
+            )
+
+        retrieval_query = RetrievalQuery(text=query_text, limit=limit)
+        query_vector = self.embedding_backend.embed_text(query_text)
+        retrieval_core = self.retrieval_core
+        if not self.file_vector_store.collection_exists():
+            retrieval_core = HybridRetrievalCore(
+                folder_retriever=self.retriever,
+                file_retriever=None,
+                card_builder=self.card_builder,
+            )
+
+        response = retrieval_core.retrieve(retrieval_query, query_vector)
+        self.result_store.save_retrieval_response(response)
+        self.audit_store.record_retrieval_run(response)
+
+        logger.info(
+            "query_finished",
+            extra={
+                "query": query_text,
+                "match_type": response.match_type,
+                "match_count": len(response.matches),
+                "needs_review": response.needs_review,
+                "top_match_score": (
+                    round(response.matches[0].score, 4) if response.matches else None
+                ),
+                "top_match_raw_score": (
+                    round(response.matches[0].raw_score or 0.0, 4) if response.matches else None
+                ),
+            },
+        )
+        return response
 
     def _run_query(
         self,
@@ -358,6 +549,16 @@ class HarborPreindexApp:
             report["checks"]["qdrant_local"] = {"ok": True, **qdrant_info}
         except Exception as exc:
             report["checks"]["qdrant_local"] = {
+                "ok": False,
+                "path": str(self.settings.qdrant_path),
+                "error": str(exc),
+            }
+
+        try:
+            qdrant_file_info = self.file_vector_store.collection_info()
+            report["checks"]["qdrant_local_files"] = {"ok": True, **qdrant_file_info}
+        except Exception as exc:
+            report["checks"]["qdrant_local_files"] = {
                 "ok": False,
                 "path": str(self.settings.qdrant_path),
                 "error": str(exc),

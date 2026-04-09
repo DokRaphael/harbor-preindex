@@ -44,6 +44,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include the extracted query profile and top candidate profiles in the output",
     )
 
+    query_parser = subparsers.add_parser(
+        "query", help="Search the retrieval core for files and folders"
+    )
+    query_parser.add_argument("text", help="Plain text retrieval query")
+    query_parser.add_argument(
+        "--top-k", type=int, default=None, help="Override top-k retrieval size"
+    )
+
     subparsers.add_parser("health-check", help="Check local dependencies and configuration")
 
     return parser
@@ -73,6 +81,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload = app.query_file_debug_payload(Path(args.file_path), top_k=args.top_k)
             else:
                 payload = app.query_file(Path(args.file_path), top_k=args.top_k).to_dict()
+        elif args.command == "query":
+            payload = app.query(args.text, top_k=args.top_k).to_dict()
         elif args.command == "health-check":
             payload = app.health_check()
         else:

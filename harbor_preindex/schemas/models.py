@@ -4,7 +4,141 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
+
+TargetKind = Literal["file", "folder"]
+MatchType = Literal["exact_file", "likely_file", "folder_zone", "mixed", "no_match"]
+
+_VALID_TARGET_KINDS = set(get_args(TargetKind))
+_VALID_MATCH_TYPES = set(get_args(MatchType))
+
+
+@dataclass(slots=True)
+class FileCard:
+    """Indexable file representation for retrieval."""
+
+    file_id: str
+    path: str
+    filename: str
+    extension: str
+    parent_path: str
+    modality: str
+    text_for_embedding: str
+    metadata: dict[str, Any]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "file_id": self.file_id,
+            "path": self.path,
+            "filename": self.filename,
+            "extension": self.extension,
+            "parent_path": self.parent_path,
+            "modality": self.modality,
+            "text_for_embedding": self.text_for_embedding,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass(slots=True)
+class FolderCard:
+    """Indexable folder representation for retrieval."""
+
+    folder_id: str
+    path: str
+    relative_path: str
+    name: str
+    parent_path: str | None
+    text_for_embedding: str
+    metadata: dict[str, Any]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "folder_id": self.folder_id,
+            "path": self.path,
+            "relative_path": self.relative_path,
+            "name": self.name,
+            "parent_path": self.parent_path,
+            "text_for_embedding": self.text_for_embedding,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass(slots=True)
+class RetrievalQuery:
+    """Structured retrieval request."""
+
+    text: str
+    limit: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "limit": self.limit,
+        }
+
+
+@dataclass(slots=True)
+class RetrievalMatch:
+    """A file or folder candidate returned by retrieval."""
+
+    target_kind: TargetKind
+    target_id: str
+    path: str
+    score: float
+    label: str
+    why: str
+    raw_score: float | None = None
+    decision_score: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.target_kind not in _VALID_TARGET_KINDS:
+            raise ValueError(
+                f"unsupported target_kind={self.target_kind!r}; "
+                f"expected one of {sorted(_VALID_TARGET_KINDS)}"
+            )
+        if self.raw_score is None:
+            self.raw_score = self.score
+        if self.decision_score is None:
+            self.decision_score = self.score
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_kind": self.target_kind,
+            "target_id": self.target_id,
+            "path": self.path,
+            "score": round(self.score, 4),
+            "label": self.label,
+            "why": self.why,
+        }
+
+
+@dataclass(slots=True)
+class RetrievalResponse:
+    """Stable JSON response for Harbor retrieval queries."""
+
+    query: str
+    match_type: MatchType
+    matches: list[RetrievalMatch]
+    confidence: float
+    needs_review: bool
+    generated_at: str
+
+    def __post_init__(self) -> None:
+        if self.match_type not in _VALID_MATCH_TYPES:
+            raise ValueError(
+                f"unsupported match_type={self.match_type!r}; "
+                f"expected one of {sorted(_VALID_MATCH_TYPES)}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "match_type": self.match_type,
+            "confidence": round(self.confidence, 4),
+            "needs_review": self.needs_review,
+            "matches": [match.to_dict() for match in self.matches],
+            "generated_at": self.generated_at,
+        }
 
 
 @dataclass(slots=True)
@@ -52,6 +186,14 @@ class IndexedProject:
 
 
 @dataclass(slots=True)
+class IndexedFileCard:
+    """File card plus embedding vector."""
+
+    card: FileCard
+    embedding: list[float]
+
+
+@dataclass(slots=True)
 class SearchCandidate:
     """Vector search result."""
 
@@ -70,6 +212,21 @@ class SearchCandidate:
             "path": self.path,
             "score": round(self.score, 4),
         }
+
+
+@dataclass(slots=True)
+class FileSearchCandidate:
+    """Vector search result for a file card."""
+
+    file_id: str
+    path: str
+    filename: str
+    extension: str
+    parent_path: str
+    modality: str
+    score: float
+    text_for_embedding: str
+    metadata: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -130,16 +287,22 @@ class IndexBuildSummary:
     root_path: str
     collection: str
     indexed_projects: int
+    indexed_files: int
     scanned_directories: int
     recreated_collection: bool
     generated_at: str
+    file_collection: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "root_path": self.root_path,
             "collection": self.collection,
             "indexed_projects": self.indexed_projects,
+            "indexed_files": self.indexed_files,
             "scanned_directories": self.scanned_directories,
             "recreated_collection": self.recreated_collection,
             "generated_at": self.generated_at,
         }
+        if self.file_collection:
+            payload["file_collection"] = self.file_collection
+        return payload
