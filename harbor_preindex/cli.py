@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument(
         "--top-k", type=int, default=None, help="Override top-k retrieval size"
     )
+    query_parser.add_argument(
+        "--debug-evidence",
+        action="store_true",
+        help="Include structured retrieval evidence in the output",
+    )
 
     subparsers.add_parser("health-check", help="Check local dependencies and configuration")
 
@@ -82,7 +87,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 payload = app.query_file(Path(args.file_path), top_k=args.top_k).to_dict()
         elif args.command == "query":
-            payload = app.query(args.text, top_k=args.top_k).to_dict()
+            payload = app.query(args.text, top_k=args.top_k).to_dict(
+                include_evidence=bool(args.debug_evidence)
+            )
         elif args.command == "health-check":
             payload = app.health_check()
         else:

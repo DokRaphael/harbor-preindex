@@ -12,6 +12,7 @@ from harbor_preindex.retrieval.cards import RetrievalCardBuilder
 from harbor_preindex.schemas import (
     FileSearchCandidate,
     MatchType,
+    RetrievalEvidence,
     RetrievalMatch,
     RetrievalQuery,
     RetrievalResponse,
@@ -69,6 +70,14 @@ class ScoreCalibration:
 
     raw_score: float
     decision_score: float
+
+
+@dataclass(slots=True, frozen=True)
+class MatchExplanation:
+    """Compact explanation assembled for a retrieval match."""
+
+    why: str
+    evidence: RetrievalEvidence
 
 
 class HybridRetrievalCore:
@@ -201,11 +210,7 @@ class HybridRetrievalCore:
         candidate: FileSearchCandidate,
         calibration: ScoreCalibration,
     ) -> RetrievalMatch:
-        why = "filename and folder context match query"
-        if candidate.metadata.get("text_excerpt"):
-            why = "filename and extracted text strongly match query"
-        elif self._shared_query_tokens(query_text, candidate.filename):
-            why = "filename strongly matches query"
+        explanation = self._build_file_explanation(query_text, candidate)
 
         return RetrievalMatch(
             target_kind="file",
@@ -213,7 +218,8 @@ class HybridRetrievalCore:
             path=candidate.path,
             score=calibration.decision_score,
             label=candidate.filename,
-            why=why,
+            why=explanation.why,
+            evidence=explanation.evidence,
             raw_score=calibration.raw_score,
             decision_score=calibration.decision_score,
         )
@@ -226,14 +232,7 @@ class HybridRetrievalCore:
     ) -> RetrievalMatch:
         card = self.card_builder.build_folder_card_from_candidate(candidate)
         label = card.relative_path if card.relative_path != "." else card.name
-        why = "folder profile matches query"
-        sample_filenames = card.metadata.get("sample_filenames")
-        if isinstance(sample_filenames, list) and any(
-            self._shared_query_tokens(query_text, str(filename)) for filename in sample_filenames
-        ):
-            why = "folder path and sample filenames match query"
-        elif self._shared_query_tokens(query_text, label):
-            why = "folder path strongly matches query"
+        explanation = self._build_folder_explanation(query_text, candidate, label)
 
         return RetrievalMatch(
             target_kind="folder",
@@ -241,7 +240,8 @@ class HybridRetrievalCore:
             path=card.path,
             score=calibration.decision_score,
             label=label,
-            why=why,
+            why=explanation.why,
+            evidence=explanation.evidence,
             raw_score=calibration.raw_score,
             decision_score=calibration.decision_score,
         )
@@ -324,6 +324,211 @@ class HybridRetrievalCore:
     def _shared_query_tokens(self, query_text: str, label: str) -> bool:
         return bool(set(_meaningful_tokens(query_text)) & set(_meaningful_tokens(label)))
 
+    def _build_file_explanation(
+        self,
+        query_text: str,
+        candidate: FileSearchCandidate,
+    ) -> MatchExplanation:
+        query_tokens = _meaningful_tokens(query_text)
+        metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+        semantic_hints = metadata.get("semantic_hints")
+        if not isinstance(semantic_hints, dict):
+            semantic_hints = {}
+
+        source_terms: dict[str, list[str]] = {}
+        filename_terms = _matched_query_terms(query_tokens, candidate.filename)
+        parent_terms = _matched_query_terms(
+            query_tokens,
+            str(metadata.get("relative_parent_path", candidate.parent_path)),
+        )
+        content_terms = _matched_query_terms(query_tokens, str(metadata.get("text_excerpt", "")))
+        summary_terms = _matched_query_terms(
+            query_tokens,
+            str(metadata.get("functional_summary", "")),
+        )
+        topic_matches, topic_terms = _matched_values_and_terms(
+            query_text,
+            query_tokens,
+            _string_list(semantic_hints.get("topic_hints")),
+        )
+        entity_matches, entity_terms = _matched_values_and_terms(
+            query_text,
+            query_tokens,
+            _string_list(semantic_hints.get("entity_candidates")),
+        )
+        time_matches, time_terms = _matched_values_and_terms(
+            query_text,
+            query_tokens,
+            _string_list(semantic_hints.get("time_hints")),
+        )
+        import_matches, import_terms = _matched_values_and_terms(
+            query_text,
+            query_tokens,
+            _string_list(metadata.get("imports")),
+        )
+        symbol_matches, symbol_terms = _matched_values_and_terms(
+            query_text,
+            query_tokens,
+            _string_list(metadata.get("symbols")),
+        )
+
+        _add_source_terms(source_terms, "filename", filename_terms)
+        _add_source_terms(source_terms, "parent_path", parent_terms)
+        _add_source_terms(source_terms, "content", content_terms)
+        _add_source_terms(
+            source_terms,
+            "semantic_hints",
+            [*summary_terms, *topic_terms, *entity_terms, *time_terms],
+        )
+        _add_source_terms(source_terms, "imports", import_terms)
+        _add_source_terms(source_terms, "symbols", symbol_terms)
+
+        notes = _compact_list(
+            [
+                _note_from_matches("topic hints aligned", topic_matches),
+                _note_from_matches("entity candidates aligned", entity_matches),
+                _note_from_matches("time hints aligned", time_matches),
+                _note_from_matches("imports aligned", import_matches),
+                _note_from_matches("symbols aligned", symbol_matches),
+            ],
+            limit=3,
+        )
+        evidence = RetrievalEvidence(
+            matched_query_terms=_compact_list(
+                [
+                    *filename_terms,
+                    *parent_terms,
+                    *content_terms,
+                    *summary_terms,
+                    *topic_terms,
+                    *entity_terms,
+                    *time_terms,
+                    *import_terms,
+                    *symbol_terms,
+                ],
+                limit=8,
+            ),
+            matched_sources=list(source_terms),
+            source_terms=source_terms,
+            matched_topic_hints=topic_matches,
+            matched_entity_candidates=entity_matches,
+            matched_time_hints=time_matches,
+            matched_imports=import_matches,
+            matched_symbols=symbol_matches,
+            notes=notes,
+        )
+        why = self._file_why(
+            filename_terms=filename_terms,
+            parent_terms=parent_terms,
+            content_terms=content_terms,
+            topic_matches=topic_matches,
+            entity_matches=entity_matches,
+            time_matches=time_matches,
+            import_matches=import_matches,
+            symbol_matches=symbol_matches,
+            summary_terms=summary_terms,
+        )
+        return MatchExplanation(why=why, evidence=evidence)
+
+    def _build_folder_explanation(
+        self,
+        query_text: str,
+        candidate: FolderSearchCandidate,
+        label: str,
+    ) -> MatchExplanation:
+        query_tokens = _meaningful_tokens(query_text)
+        source_terms: dict[str, list[str]] = {}
+
+        folder_path_terms = _matched_query_terms(query_tokens, f"{label} {candidate.path}")
+        folder_profile_terms = _matched_query_terms(query_tokens, candidate.text_profile)
+        sample_matches, sample_terms = _matched_values_and_terms(
+            query_text,
+            query_tokens,
+            candidate.sample_filenames,
+        )
+
+        _add_source_terms(source_terms, "folder_path", folder_path_terms)
+        _add_source_terms(source_terms, "folder_profile", folder_profile_terms)
+        _add_source_terms(source_terms, "sample_filenames", sample_terms)
+
+        evidence = RetrievalEvidence(
+            matched_query_terms=_compact_list(
+                [*folder_path_terms, *folder_profile_terms, *sample_terms],
+                limit=8,
+            ),
+            matched_sources=list(source_terms),
+            source_terms=source_terms,
+            notes=_compact_list(
+                [_note_from_matches("sample filenames aligned", sample_matches)],
+                limit=3,
+            ),
+        )
+        why = self._folder_why(
+            folder_path_terms=folder_path_terms,
+            folder_profile_terms=folder_profile_terms,
+            sample_matches=sample_matches,
+        )
+        return MatchExplanation(why=why, evidence=evidence)
+
+    def _file_why(
+        self,
+        *,
+        filename_terms: list[str],
+        parent_terms: list[str],
+        content_terms: list[str],
+        topic_matches: list[str],
+        entity_matches: list[str],
+        time_matches: list[str],
+        import_matches: list[str],
+        symbol_matches: list[str],
+        summary_terms: list[str],
+    ) -> str:
+        semantic_match = bool(topic_matches or entity_matches or time_matches or summary_terms)
+        if import_matches and semantic_match:
+            return "code imports and functional summary overlap with query topics"
+        if symbol_matches and semantic_match:
+            return "code symbols and semantic hints overlap with query topics"
+        if entity_matches and time_matches:
+            return "entity candidate and time hint align with the query"
+        if filename_terms and semantic_match:
+            return "matched query terms in filename and semantic summary"
+        if filename_terms and content_terms:
+            return "matched query terms in filename and extracted text"
+        if parent_terms and semantic_match:
+            return "parent path and semantic hints overlap with query"
+        if content_terms and semantic_match:
+            return "extracted text and semantic hints overlap with query"
+        if filename_terms:
+            return "matched query terms in filename"
+        if semantic_match:
+            return "semantic hints overlap with query topics"
+        if content_terms:
+            return "extracted text overlaps with query terms"
+        if parent_terms:
+            return "parent path overlaps with query terms"
+        return "retrieval score and file context suggest a match"
+
+    def _folder_why(
+        self,
+        *,
+        folder_path_terms: list[str],
+        folder_profile_terms: list[str],
+        sample_matches: list[str],
+    ) -> str:
+        if folder_path_terms and folder_profile_terms:
+            return "folder path and profile strongly overlap with query topics"
+        if sample_matches and folder_profile_terms:
+            return "sample filenames and folder profile overlap with query"
+        if folder_path_terms and sample_matches:
+            return "folder path and sample filenames overlap with query"
+        if folder_path_terms:
+            return "folder path matches query terms"
+        if folder_profile_terms:
+            return "folder profile overlaps with query topics"
+        if sample_matches:
+            return "sample filenames overlap with query terms"
+        return "folder profile retrieved as a likely match"
+
 
 def _meaningful_tokens(value: str) -> list[str]:
     normalized = (
@@ -353,6 +558,76 @@ def _score_bounds(
     tail_index = min(len(candidates) - 1, 2)
     tail_raw_score = candidates[tail_index].score
     return top_raw_score, tail_raw_score
+
+
+def _matched_query_terms(query_tokens: Sequence[str], value: str) -> list[str]:
+    value_tokens = set(_meaningful_tokens(value))
+    return [token for token in query_tokens if token in value_tokens]
+
+
+def _matched_values_and_terms(
+    query_text: str,
+    query_tokens: Sequence[str],
+    values: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    normalized_query = _normalized_value(query_text)
+    matched_values: list[str] = []
+    matched_terms: list[str] = []
+    for value in values:
+        cleaned = str(value).strip()
+        if not cleaned:
+            continue
+        value_terms = _matched_query_terms(query_tokens, cleaned)
+        normalized_value = _normalized_value(cleaned)
+        if value_terms or (normalized_value and normalized_value in normalized_query):
+            matched_values.append(cleaned)
+            matched_terms.extend(value_terms)
+    return _compact_list(matched_values, limit=4), _compact_list(matched_terms, limit=6)
+
+
+def _add_source_terms(source_terms: dict[str, list[str]], source: str, terms: list[str]) -> None:
+    compact_terms = _compact_list(terms, limit=6)
+    if compact_terms:
+        source_terms[source] = compact_terms
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _note_from_matches(prefix: str, matches: Sequence[str]) -> str | None:
+    compact_matches = _compact_list(list(matches), limit=2)
+    if not compact_matches:
+        return None
+    return f"{prefix}: {', '.join(compact_matches)}"
+
+
+def _normalized_value(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def _compact_list(values: list[str | None], limit: int) -> list[str]:
+    compacted: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        cleaned = str(value).strip()
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        compacted.append(cleaned)
+        if len(compacted) >= limit:
+            break
+    return compacted
 
 
 class FolderRetriever(Protocol):

@@ -91,7 +91,15 @@ This text query path uses a simple hybrid search:
 1. search the existing folder-level index
 2. search a new file-level index
 3. merge both result sets
-4. return a stable JSON response with `match_type`, `confidence`, and `needs_review`
+4. return a stable JSON response with `match_type`, `confidence`, `needs_review`, and a compact `why` explanation per match
+
+The standard response stays compact. If you want structured explanation details for debugging, use:
+
+```bash
+harbor-preindex query --debug-evidence "where is the code that talks to qdrant?"
+```
+
+This adds an `evidence` object per match with compact overlap signals such as matched sources, query terms, topic hints, entity candidates, imports, or symbols. It is heuristic by design and meant for explainability, not exact contribution accounting.
 
 ---
 
