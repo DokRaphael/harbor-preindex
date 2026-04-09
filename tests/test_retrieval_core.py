@@ -225,7 +225,7 @@ class HybridRetrievalCoreTests(unittest.TestCase):
                         path="/tmp/storage-root/projects/neuraloop",
                         name="neuraloop",
                         parent="projects",
-                        score=0.82,
+                        score=0.8,
                         sample_filenames=["overview.txt"],
                         doc_count=4,
                         text_profile="Neuraloop docs folder",
@@ -241,7 +241,7 @@ class HybridRetrievalCoreTests(unittest.TestCase):
                         extension=".md",
                         parent_path="/tmp/storage-root/projects/neuraloop",
                         modality="document",
-                        score=0.8,
+                        score=0.81,
                         text_for_embedding="Neuraloop spec 2024",
                         metadata={
                             "text_excerpt": "Neuraloop specification updated in 2024",
@@ -270,8 +270,124 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         self.assertEqual(response.matches[0].why, "entity candidate and time hint align with the query")
         self.assertIsNotNone(response.matches[0].evidence)
         assert response.matches[0].evidence is not None
-        self.assertIn("query hint bonus applied", " ".join(response.matches[0].evidence.notes))
+        self.assertIn(
+            "multi-hint coverage increased ranking confidence",
+            " ".join(response.matches[0].evidence.notes),
+        )
         self.assertEqual(response.matches[0].evidence.matched_time_hints, ["2024"])
+
+    def test_multi_hint_coverage_beats_time_only_alignment(self) -> None:
+        core = HybridRetrievalCore(
+            folder_retriever=StubFolderRetriever(
+                [
+                    SearchCandidate(
+                        project_id="folder-time-only",
+                        path="/tmp/storage-root/admin/archive/2018",
+                        name="2018",
+                        parent="archive",
+                        score=0.84,
+                        sample_filenames=["scan_2018.pdf"],
+                        doc_count=8,
+                        text_profile="Administrative archive 2018",
+                    )
+                ]
+            ),
+            file_retriever=StubFileRetriever(
+                [
+                    FileSearchCandidate(
+                        file_id="file-multi",
+                        path="/tmp/storage-root/admin/factures/amazon_invoice_2018.pdf",
+                        filename="amazon_invoice_2018.pdf",
+                        extension=".pdf",
+                        parent_path="/tmp/storage-root/admin/factures",
+                        modality="document",
+                        score=0.8,
+                        text_for_embedding="Amazon invoice 2018",
+                        metadata={
+                            "text_excerpt": "Amazon invoice for ESP8266 order in 2018",
+                            "functional_summary": "Transactional document with named entities such as Amazon and time hints such as 2018.",
+                            "semantic_hints": {
+                                "kind_hints": ["transactional_document"],
+                                "topic_hints": ["amazon", "invoice"],
+                                "entity_candidates": ["Amazon"],
+                                "time_hints": ["2018"],
+                            },
+                        },
+                    ),
+                ]
+            ),
+            card_builder=StubCardBuilder(),
+            query_hint_extractor=QueryHintExtractor(today=date(2026, 4, 9)),
+        )
+
+        response = core.retrieve(RetrievalQuery(text="Amazon invoice from 2018", limit=5), [0.1, 0.2])
+
+        self.assertEqual(response.matches[0].target_id, "file-multi")
+        self.assertIn(
+            "multi-hint coverage increased ranking confidence",
+            " ".join(response.matches[0].evidence.notes if response.matches[0].evidence else []),
+        )
+        self.assertIn(
+            "time hint matched with no other strong hint; conservative adjustment applied",
+            " ".join(response.matches[1].evidence.notes if response.matches[1].evidence else []),
+        )
+
+    def test_specific_document_query_keeps_folder_time_bonus_conservative(self) -> None:
+        core = HybridRetrievalCore(
+            folder_retriever=StubFolderRetriever(
+                [
+                    SearchCandidate(
+                        project_id="folder-2018",
+                        path="/tmp/storage-root/admin/bulletindepaie/Snips/2018",
+                        name="2018",
+                        parent="Snips",
+                        score=0.85,
+                        sample_filenames=["scan_2018.pdf"],
+                        doc_count=12,
+                        text_profile="Administrative archive 2018",
+                    )
+                ]
+            ),
+            file_retriever=StubFileRetriever(
+                [
+                    FileSearchCandidate(
+                        file_id="file-amazon-2018",
+                        path="/tmp/storage-root/liloFactures/ESP8266amazon.pdf",
+                        filename="ESP8266amazon.pdf",
+                        extension=".pdf",
+                        parent_path="/tmp/storage-root/liloFactures",
+                        modality="document",
+                        score=0.79,
+                        text_for_embedding="Amazon invoice ESP8266 2018",
+                        metadata={
+                            "text_excerpt": "Amazon invoice for ESP8266 order in 2018",
+                            "functional_summary": "Transactional document with named entities such as Amazon and time hints such as 2018.",
+                            "semantic_hints": {
+                                "kind_hints": ["transactional_document"],
+                                "topic_hints": ["amazon", "invoice"],
+                                "entity_candidates": ["Amazon"],
+                                "time_hints": ["2018"],
+                            },
+                        },
+                    )
+                ]
+            ),
+            card_builder=StubCardBuilder(),
+            query_hint_extractor=QueryHintExtractor(today=date(2026, 4, 9)),
+        )
+
+        response = core.retrieve(RetrievalQuery(text="facture amazon de 2018", limit=5), [0.1, 0.2])
+
+        self.assertEqual(response.matches[0].target_kind, "file")
+        self.assertEqual(response.matches[0].target_id, "file-amazon-2018")
+        self.assertIn(
+            "file precision preference applied for specific document-like query",
+            " ".join(response.matches[0].evidence.notes if response.matches[0].evidence else []),
+        )
+        self.assertIn(
+            "time hint matched with no other strong hint; conservative adjustment applied",
+            " ".join(response.matches[1].evidence.notes if response.matches[1].evidence else []),
+        )
 
     def test_code_match_exposes_import_and_symbol_evidence(self) -> None:
         core = HybridRetrievalCore(

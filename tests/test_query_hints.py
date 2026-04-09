@@ -27,6 +27,13 @@ class QueryHintExtractorTests(unittest.TestCase):
         self.assertIn("technical_document", hints.kind_hints)
         self.assertEqual(hints.intent_hint, "document_lookup")
 
+    def test_extracts_transactional_hint_for_french_invoice_query(self) -> None:
+        hints = self.extractor.extract("facture amazon de 2018")
+
+        self.assertIn("transactional_document", hints.kind_hints)
+        self.assertIn("amazon", hints.entity_terms)
+        self.assertIn("2018", hints.time_hints)
+
     def test_extracts_technical_hints_for_code_queries(self) -> None:
         hints = self.extractor.extract("where is the code that talks to qdrant?")
 
