@@ -100,15 +100,16 @@ There are now two related query paths:
    file -> SignalExtractor -> ExtractedSignal -> SemanticEnricher -> EnrichedSignal -> embedding -> retrieval -> decision
 
 2. semantic retrieval
-   text query -> embedding -> hybrid retrieval on files + folders -> explanation
+   text query -> QueryHintExtractor -> StructuredQueryHints -> embedding -> hybrid retrieval -> light hint-aware rerank -> explanation
 
 
 This text query path uses a simple hybrid search:
 
 1. search the existing folder-level index
 2. search a new file-level index
-3. merge both result sets
-4. return a stable JSON response with `match_type`, `confidence`, `needs_review`, and a compact `why` explanation per match
+3. extract lightweight structured query hints
+4. apply a small hint-aware rerank bonus when hints align with the candidates
+5. return a stable JSON response with `match_type`, `confidence`, `needs_review`, and a compact `why` explanation per match
 
 The standard response stays compact. If you want structured explanation details for debugging, use:
 
@@ -117,6 +118,9 @@ harbor-preindex query --debug-evidence "where is the code that talks to qdrant?"
 ```
 
 This adds an `evidence` object per match with compact overlap signals such as matched sources, query terms, topic hints, entity candidates, imports, or symbols. It is heuristic by design and meant for explainability, not exact contribution accounting.
+
+It also adds top-level `query_hints`, which exposes the lightweight structured interpretation of the query used for hint-aware reranking and explanation.
+These hints are soft signals only. They are not a heavy filter layer and do not hard-exclude results by default.
 
 ---
 
@@ -160,9 +164,11 @@ It is about **preparing a filesystem for semantic retrieval and assisted organiz
 ### Querying the retrieval core
 
 * embed a plain text query
+* extract lightweight structured query hints from the query
 * retrieve top-k candidate files
 * retrieve top-k candidate folders
-* merge both lists without requiring an LLM
+* apply a small soft rerank bonus when query hints align with candidate semantics
+* merge both lists without requiring an LLM or heavy filters
 * return a stable JSON response for higher-level Harbor consumers
 
 ### Local persistence

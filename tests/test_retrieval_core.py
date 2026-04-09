@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import date
 import unittest
 
 from harbor_preindex.retrieval.core import HybridRetrievalCore
+from harbor_preindex.retrieval.query_hints import QueryHintExtractor
 from harbor_preindex.schemas import (
     FileSearchCandidate,
     FolderCard,
@@ -87,7 +89,10 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         self.assertFalse(response.needs_review)
         self.assertEqual(response.matches[0].target_kind, "file")
         self.assertEqual(response.matches[0].label, "Raphael_Dok_CV.txt")
-        self.assertEqual(response.matches[0].why, "matched query terms in filename")
+        self.assertEqual(
+            response.matches[0].why,
+            "matched query terms in filename and semantic summary",
+        )
         self.assertAlmostEqual(response.matches[0].raw_score or 0.0, 0.93, places=4)
         self.assertNotEqual(response.matches[0].score, response.matches[0].raw_score)
 
@@ -211,6 +216,63 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         self.assertIn("amazon", match.evidence.source_terms["filename"])
         self.assertIn("2025", match.evidence.source_terms["semantic_hints"])
 
+    def test_query_hints_lightly_rerank_results_without_hard_filtering(self) -> None:
+        core = HybridRetrievalCore(
+            folder_retriever=StubFolderRetriever(
+                [
+                    SearchCandidate(
+                        project_id="projects_neuraloop",
+                        path="/tmp/storage-root/projects/neuraloop",
+                        name="neuraloop",
+                        parent="projects",
+                        score=0.82,
+                        sample_filenames=["overview.txt"],
+                        doc_count=4,
+                        text_profile="Neuraloop docs folder",
+                    )
+                ]
+            ),
+            file_retriever=StubFileRetriever(
+                [
+                    FileSearchCandidate(
+                        file_id="file-5",
+                        path="/tmp/storage-root/projects/neuraloop/spec_2024.md",
+                        filename="spec_2024.md",
+                        extension=".md",
+                        parent_path="/tmp/storage-root/projects/neuraloop",
+                        modality="document",
+                        score=0.8,
+                        text_for_embedding="Neuraloop spec 2024",
+                        metadata={
+                            "text_excerpt": "Neuraloop specification updated in 2024",
+                            "functional_summary": "Technical document with time hints such as 2024.",
+                            "semantic_hints": {
+                                "kind_hints": ["technical_document"],
+                                "topic_hints": ["neuraloop", "spec"],
+                                "entity_candidates": ["Neuraloop"],
+                                "time_hints": ["2024"],
+                            },
+                        },
+                    )
+                ]
+            ),
+            card_builder=StubCardBuilder(),
+            query_hint_extractor=QueryHintExtractor(today=date(2026, 4, 9)),
+        )
+
+        response = core.retrieve(
+            RetrievalQuery(text="find the Neuraloop docs from 2024", limit=5),
+            [0.1, 0.2],
+        )
+
+        self.assertEqual(response.matches[0].target_kind, "file")
+        self.assertGreater(response.matches[0].score, response.matches[1].score)
+        self.assertEqual(response.matches[0].why, "entity candidate and time hint align with the query")
+        self.assertIsNotNone(response.matches[0].evidence)
+        assert response.matches[0].evidence is not None
+        self.assertIn("query hint bonus applied", " ".join(response.matches[0].evidence.notes))
+        self.assertEqual(response.matches[0].evidence.matched_time_hints, ["2024"])
+
     def test_code_match_exposes_import_and_symbol_evidence(self) -> None:
         core = HybridRetrievalCore(
             folder_retriever=StubFolderRetriever([]),
@@ -247,13 +309,14 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         )
 
         match = response.matches[0]
-        self.assertEqual(match.why, "code imports and functional summary overlap with query topics")
+        self.assertEqual(match.why, "technical hints and code imports align with the query")
         self.assertIsNotNone(match.evidence)
         assert match.evidence is not None
         self.assertEqual(match.evidence.matched_imports, ["qdrant_client"])
         self.assertIn("semantic_hints", match.evidence.matched_sources)
         self.assertIn("imports", match.evidence.matched_sources)
         self.assertIn("qdrant", match.evidence.source_terms["imports"])
+        self.assertEqual(match.evidence.matched_technical_hints, ["vector_storage"])
 
     def test_retrieval_contract_rejects_unknown_literals(self) -> None:
         with self.assertRaises(ValueError):
@@ -329,6 +392,50 @@ class HybridRetrievalCoreTests(unittest.TestCase):
         )
         self.assertNotIn("evidence", response.to_dict()["matches"][0])
         self.assertIn("evidence", response.to_dict(include_evidence=True)["matches"][0])
+
+    def test_debug_output_includes_query_hints_but_standard_output_stays_compact(self) -> None:
+        core = HybridRetrievalCore(
+            folder_retriever=StubFolderRetriever([]),
+            file_retriever=StubFileRetriever(
+                [
+                    FileSearchCandidate(
+                        file_id="file-6",
+                        path="/tmp/storage-root/projects/neuraloop/qdrant_cli.py",
+                        filename="qdrant_cli.py",
+                        extension=".py",
+                        parent_path="/tmp/storage-root/projects/neuraloop",
+                        modality="code",
+                        score=0.86,
+                        text_for_embedding="Qdrant CLI module",
+                        metadata={
+                            "functional_summary": "Python code module covering vector storage and CLI flows.",
+                            "semantic_hints": {
+                                "kind_hints": ["code_artifact"],
+                                "topic_hints": ["vector_storage", "cli"],
+                                "entity_candidates": [],
+                                "time_hints": [],
+                            },
+                            "imports": ["qdrant_client"],
+                            "symbols": ["build_parser"],
+                        },
+                    )
+                ]
+            ),
+            card_builder=StubCardBuilder(),
+            query_hint_extractor=QueryHintExtractor(today=date(2026, 4, 9)),
+        )
+
+        response = core.retrieve(
+            RetrievalQuery(text="where is the code that talks to qdrant?", limit=5),
+            [0.1, 0.2],
+        )
+
+        self.assertNotIn("query_hints", response.to_dict())
+        debug_payload = response.to_dict(include_evidence=True)
+        self.assertIn("query_hints", debug_payload)
+        self.assertIn("technical_hints", debug_payload["query_hints"])
+        self.assertNotIn("evidence", response.to_dict()["matches"][0])
+        self.assertIn("evidence", debug_payload["matches"][0])
 
 
 if __name__ == "__main__":

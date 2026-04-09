@@ -248,6 +248,7 @@ class BuildIndexBestEffortTests(unittest.TestCase):
             retriever=SimpleNamespace(),
             file_retriever=SimpleNamespace(),
             retrieval_core=SimpleNamespace(),
+            query_hint_extractor=SimpleNamespace(),
             decision_engine=SimpleNamespace(),
             result_store=StubResultStore(),
             audit_store=StubAuditStore(),

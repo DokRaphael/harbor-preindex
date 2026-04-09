@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from harbor_preindex.retrieval.cards import RetrievalCardBuilder
+from harbor_preindex.retrieval.query_hints import QueryHintExtractor
 from harbor_preindex.schemas import (
     FileSearchCandidate,
     MatchType,
@@ -16,6 +17,7 @@ from harbor_preindex.schemas import (
     RetrievalMatch,
     RetrievalQuery,
     RetrievalResponse,
+    StructuredQueryHints,
     TargetKind,
 )
 from harbor_preindex.schemas import SearchCandidate as FolderSearchCandidate
@@ -78,6 +80,7 @@ class MatchExplanation:
 
     why: str
     evidence: RetrievalEvidence
+    hint_bonus: float = 0.0
 
 
 class HybridRetrievalCore:
@@ -88,12 +91,15 @@ class HybridRetrievalCore:
         folder_retriever: FolderRetriever,
         card_builder: RetrievalCardBuilder,
         file_retriever: FileRetriever | None = None,
+        query_hint_extractor: QueryHintExtractor | None = None,
     ) -> None:
         self.folder_retriever = folder_retriever
         self.file_retriever = file_retriever
         self.card_builder = card_builder
+        self.query_hint_extractor = query_hint_extractor or QueryHintExtractor()
 
     def retrieve(self, query: RetrievalQuery, query_vector: Sequence[float]) -> RetrievalResponse:
+        query_hints = query.structured_hints or self.query_hint_extractor.extract(query.text)
         file_candidates = (
             self.file_retriever.retrieve(query_vector, query.limit)
             if self.file_retriever is not None
@@ -101,8 +107,8 @@ class HybridRetrievalCore:
         )
         folder_candidates = self.folder_retriever.retrieve(query_vector, query.limit)
 
-        file_matches = self._build_file_matches(query.text, file_candidates)
-        folder_matches = self._build_folder_matches(query.text, folder_candidates)
+        file_matches = self._build_file_matches(query.text, query_hints, file_candidates)
+        folder_matches = self._build_folder_matches(query.text, query_hints, folder_candidates)
         matches = self._merge_matches(file_matches, folder_matches, query.limit)
         match_type = self._select_match_type(query.text, file_matches, folder_matches)
         confidence = self._confidence(match_type, matches)
@@ -115,11 +121,13 @@ class HybridRetrievalCore:
             confidence=confidence,
             needs_review=needs_review,
             generated_at=utc_now_iso(),
+            query_hints=query_hints,
         )
 
     def _build_file_matches(
         self,
         query_text: str,
+        query_hints: StructuredQueryHints,
         file_candidates: Sequence[FileSearchCandidate],
     ) -> list[RetrievalMatch]:
         top_raw_score, tail_raw_score = _score_bounds(file_candidates)
@@ -127,6 +135,7 @@ class HybridRetrievalCore:
             self._file_candidate_to_match(
                 query_text=query_text,
                 candidate=candidate,
+                query_hints=query_hints,
                 calibration=self._calibrate_score(
                     target_kind="file",
                     raw_score=candidate.score,
@@ -142,6 +151,7 @@ class HybridRetrievalCore:
     def _build_folder_matches(
         self,
         query_text: str,
+        query_hints: StructuredQueryHints,
         folder_candidates: Sequence[FolderSearchCandidate],
     ) -> list[RetrievalMatch]:
         top_raw_score, tail_raw_score = _score_bounds(folder_candidates)
@@ -149,6 +159,7 @@ class HybridRetrievalCore:
             self._folder_candidate_to_match(
                 query_text=query_text,
                 candidate=candidate,
+                query_hints=query_hints,
                 calibration=self._calibrate_score(
                     target_kind="folder",
                     raw_score=candidate.score,
@@ -208,42 +219,46 @@ class HybridRetrievalCore:
         self,
         query_text: str,
         candidate: FileSearchCandidate,
+        query_hints: StructuredQueryHints,
         calibration: ScoreCalibration,
     ) -> RetrievalMatch:
-        explanation = self._build_file_explanation(query_text, candidate)
+        explanation = self._build_file_explanation(query_text, query_hints, candidate)
+        decision_score = round(_clamp01(calibration.decision_score + explanation.hint_bonus), 4)
 
         return RetrievalMatch(
             target_kind="file",
             target_id=candidate.file_id,
             path=candidate.path,
-            score=calibration.decision_score,
+            score=decision_score,
             label=candidate.filename,
             why=explanation.why,
             evidence=explanation.evidence,
             raw_score=calibration.raw_score,
-            decision_score=calibration.decision_score,
+            decision_score=decision_score,
         )
 
     def _folder_candidate_to_match(
         self,
         query_text: str,
         candidate: FolderSearchCandidate,
+        query_hints: StructuredQueryHints,
         calibration: ScoreCalibration,
     ) -> RetrievalMatch:
         card = self.card_builder.build_folder_card_from_candidate(candidate)
         label = card.relative_path if card.relative_path != "." else card.name
-        explanation = self._build_folder_explanation(query_text, candidate, label)
+        explanation = self._build_folder_explanation(query_text, query_hints, candidate, label)
+        decision_score = round(_clamp01(calibration.decision_score + explanation.hint_bonus), 4)
 
         return RetrievalMatch(
             target_kind="folder",
             target_id=card.folder_id,
             path=card.path,
-            score=calibration.decision_score,
+            score=decision_score,
             label=label,
             why=explanation.why,
             evidence=explanation.evidence,
             raw_score=calibration.raw_score,
-            decision_score=calibration.decision_score,
+            decision_score=decision_score,
         )
 
     def _select_match_type(
@@ -327,6 +342,7 @@ class HybridRetrievalCore:
     def _build_file_explanation(
         self,
         query_text: str,
+        query_hints: StructuredQueryHints,
         candidate: FileSearchCandidate,
     ) -> MatchExplanation:
         query_tokens = _meaningful_tokens(query_text)
@@ -334,6 +350,10 @@ class HybridRetrievalCore:
         semantic_hints = metadata.get("semantic_hints")
         if not isinstance(semantic_hints, dict):
             semantic_hints = {}
+        candidate_kind_hints = _string_list(semantic_hints.get("kind_hints"))
+        candidate_topic_hints = _string_list(semantic_hints.get("topic_hints"))
+        candidate_entity_hints = _string_list(semantic_hints.get("entity_candidates"))
+        candidate_time_hints = _string_list(semantic_hints.get("time_hints"))
 
         source_terms: dict[str, list[str]] = {}
         filename_terms = _matched_query_terms(query_tokens, candidate.filename)
@@ -346,20 +366,40 @@ class HybridRetrievalCore:
             query_tokens,
             str(metadata.get("functional_summary", "")),
         )
+        kind_matches = _matched_hint_values(query_hints.kind_hints, candidate_kind_hints)
         topic_matches, topic_terms = _matched_values_and_terms(
             query_text,
             query_tokens,
-            _string_list(semantic_hints.get("topic_hints")),
+            candidate_topic_hints,
         )
+        query_topic_matches = _matched_hint_values(query_hints.topic_hints, candidate_topic_hints)
+        technical_matches = _matched_hint_values(query_hints.technical_hints, candidate_topic_hints)
         entity_matches, entity_terms = _matched_values_and_terms(
             query_text,
             query_tokens,
-            _string_list(semantic_hints.get("entity_candidates")),
+            candidate_entity_hints,
+        )
+        entity_hint_terms = _matched_hint_terms(
+            query_hints.entity_terms,
+            [
+                candidate.filename,
+                str(metadata.get("relative_parent_path", candidate.parent_path)),
+                str(metadata.get("text_excerpt", "")),
+                *candidate_entity_hints,
+            ],
         )
         time_matches, time_terms = _matched_values_and_terms(
             query_text,
             query_tokens,
-            _string_list(semantic_hints.get("time_hints")),
+            candidate_time_hints,
+        )
+        query_time_matches = _matched_time_hints(
+            query_hints.time_hints,
+            [
+                candidate.filename,
+                str(metadata.get("text_excerpt", "")),
+                *candidate_time_hints,
+            ],
         )
         import_matches, import_terms = _matched_values_and_terms(
             query_text,
@@ -378,20 +418,49 @@ class HybridRetrievalCore:
         _add_source_terms(
             source_terms,
             "semantic_hints",
-            [*summary_terms, *topic_terms, *entity_terms, *time_terms],
+            [
+                *summary_terms,
+                *topic_terms,
+                *entity_terms,
+                *time_terms,
+                *kind_matches,
+                *query_topic_matches,
+                *technical_matches,
+                *entity_hint_terms,
+                *query_time_matches,
+            ],
         )
         _add_source_terms(source_terms, "imports", import_terms)
         _add_source_terms(source_terms, "symbols", symbol_terms)
 
+        matched_entity_values = _compact_list([*entity_matches, *entity_hint_terms], limit=4)
+        matched_time_values = _compact_list([*time_matches, *query_time_matches], limit=4)
+        matched_topic_values = _compact_list([*topic_matches, *query_topic_matches], limit=4)
         notes = _compact_list(
             [
+                _note_from_matches("kind hints aligned", kind_matches),
                 _note_from_matches("topic hints aligned", topic_matches),
-                _note_from_matches("entity candidates aligned", entity_matches),
-                _note_from_matches("time hints aligned", time_matches),
+                _note_from_matches("technical hints aligned", technical_matches),
+                _note_from_matches("entity terms aligned", matched_entity_values),
+                _note_from_matches("time hints aligned", matched_time_values),
                 _note_from_matches("imports aligned", import_matches),
                 _note_from_matches("symbols aligned", symbol_matches),
+                _query_hint_bonus_note(
+                    kind_matches=kind_matches,
+                    topic_matches=query_topic_matches,
+                    technical_matches=technical_matches,
+                    entity_matches=entity_hint_terms,
+                    time_matches=query_time_matches,
+                ),
             ],
-            limit=3,
+            limit=5,
+        )
+        hint_bonus = _query_hint_bonus(
+            kind_matches=kind_matches,
+            topic_matches=query_topic_matches,
+            technical_matches=technical_matches,
+            entity_matches=entity_hint_terms,
+            time_matches=query_time_matches,
         )
         evidence = RetrievalEvidence(
             matched_query_terms=_compact_list(
@@ -405,34 +474,44 @@ class HybridRetrievalCore:
                     *time_terms,
                     *import_terms,
                     *symbol_terms,
+                    *kind_matches,
+                    *query_topic_matches,
+                    *technical_matches,
+                    *entity_hint_terms,
+                    *query_time_matches,
                 ],
                 limit=8,
             ),
             matched_sources=list(source_terms),
             source_terms=source_terms,
-            matched_topic_hints=topic_matches,
-            matched_entity_candidates=entity_matches,
-            matched_time_hints=time_matches,
+            matched_kind_hints=kind_matches,
+            matched_topic_hints=matched_topic_values,
+            matched_entity_candidates=matched_entity_values,
+            matched_time_hints=matched_time_values,
+            matched_technical_hints=technical_matches,
             matched_imports=import_matches,
             matched_symbols=symbol_matches,
             notes=notes,
         )
         why = self._file_why(
+            kind_matches=kind_matches,
             filename_terms=filename_terms,
             parent_terms=parent_terms,
             content_terms=content_terms,
-            topic_matches=topic_matches,
-            entity_matches=entity_matches,
-            time_matches=time_matches,
+            topic_matches=matched_topic_values,
+            technical_matches=technical_matches,
+            entity_matches=matched_entity_values,
+            time_matches=matched_time_values,
             import_matches=import_matches,
             symbol_matches=symbol_matches,
             summary_terms=summary_terms,
         )
-        return MatchExplanation(why=why, evidence=evidence)
+        return MatchExplanation(why=why, evidence=evidence, hint_bonus=hint_bonus)
 
     def _build_folder_explanation(
         self,
         query_text: str,
+        query_hints: StructuredQueryHints,
         candidate: FolderSearchCandidate,
         label: str,
     ) -> MatchExplanation:
@@ -446,37 +525,91 @@ class HybridRetrievalCore:
             query_tokens,
             candidate.sample_filenames,
         )
+        entity_hint_terms = _matched_hint_terms(
+            query_hints.entity_terms,
+            [label, candidate.path, candidate.text_profile, *candidate.sample_filenames],
+        )
+        time_hint_matches = _matched_time_hints(
+            query_hints.time_hints,
+            [label, candidate.path, candidate.text_profile, *candidate.sample_filenames],
+        )
+        topic_hint_matches = _matched_hint_terms(
+            [*query_hints.topic_hints, *query_hints.technical_hints],
+            [label, candidate.path, candidate.text_profile, *candidate.sample_filenames],
+        )
+        technical_hint_matches = _matched_hint_values(query_hints.technical_hints, topic_hint_matches)
 
         _add_source_terms(source_terms, "folder_path", folder_path_terms)
         _add_source_terms(source_terms, "folder_profile", folder_profile_terms)
         _add_source_terms(source_terms, "sample_filenames", sample_terms)
+        _add_source_terms(
+            source_terms,
+            "query_hints",
+            [*entity_hint_terms, *time_hint_matches, *topic_hint_matches],
+        )
 
+        hint_bonus = _query_hint_bonus(
+            kind_matches=[],
+            topic_matches=[],
+            technical_matches=technical_hint_matches,
+            entity_matches=[],
+            time_matches=time_hint_matches,
+            max_bonus=0.08,
+        )
         evidence = RetrievalEvidence(
             matched_query_terms=_compact_list(
-                [*folder_path_terms, *folder_profile_terms, *sample_terms],
+                [
+                    *folder_path_terms,
+                    *folder_profile_terms,
+                    *sample_terms,
+                    *entity_hint_terms,
+                    *time_hint_matches,
+                    *topic_hint_matches,
+                ],
                 limit=8,
             ),
             matched_sources=list(source_terms),
             source_terms=source_terms,
             notes=_compact_list(
-                [_note_from_matches("sample filenames aligned", sample_matches)],
-                limit=3,
+                [
+                    _note_from_matches("sample filenames aligned", sample_matches),
+                    _note_from_matches("entity terms aligned", entity_hint_terms),
+                    _note_from_matches("time hints aligned", time_hint_matches),
+                    _note_from_matches("topic hints aligned", topic_hint_matches),
+                    _query_hint_bonus_note(
+                        kind_matches=[],
+                        topic_matches=[],
+                        technical_matches=technical_hint_matches,
+                        entity_matches=[],
+                        time_matches=time_hint_matches,
+                    ),
+                ],
+                limit=4,
             ),
+            matched_entity_candidates=entity_hint_terms,
+            matched_time_hints=time_hint_matches,
+            matched_topic_hints=topic_hint_matches,
+            matched_technical_hints=technical_hint_matches,
         )
         why = self._folder_why(
             folder_path_terms=folder_path_terms,
             folder_profile_terms=folder_profile_terms,
             sample_matches=sample_matches,
+            entity_matches=entity_hint_terms,
+            time_matches=time_hint_matches,
+            technical_matches=technical_hint_matches,
         )
-        return MatchExplanation(why=why, evidence=evidence)
+        return MatchExplanation(why=why, evidence=evidence, hint_bonus=hint_bonus)
 
     def _file_why(
         self,
         *,
+        kind_matches: list[str],
         filename_terms: list[str],
         parent_terms: list[str],
         content_terms: list[str],
         topic_matches: list[str],
+        technical_matches: list[str],
         entity_matches: list[str],
         time_matches: list[str],
         import_matches: list[str],
@@ -484,12 +617,16 @@ class HybridRetrievalCore:
         summary_terms: list[str],
     ) -> str:
         semantic_match = bool(topic_matches or entity_matches or time_matches or summary_terms)
-        if import_matches and semantic_match:
-            return "code imports and functional summary overlap with query topics"
-        if symbol_matches and semantic_match:
-            return "code symbols and semantic hints overlap with query topics"
+        if technical_matches and import_matches:
+            return "technical hints and code imports align with the query"
+        if technical_matches and symbol_matches:
+            return "technical hints and code symbols align with the query"
         if entity_matches and time_matches:
             return "entity candidate and time hint align with the query"
+        if kind_matches and time_matches:
+            return "kind and time hints align with the query"
+        if technical_matches and semantic_match:
+            return "technical hints and semantic summary overlap with query topics"
         if filename_terms and semantic_match:
             return "matched query terms in filename and semantic summary"
         if filename_terms and content_terms:
@@ -514,11 +651,22 @@ class HybridRetrievalCore:
         folder_path_terms: list[str],
         folder_profile_terms: list[str],
         sample_matches: list[str],
+        entity_matches: list[str],
+        time_matches: list[str],
+        technical_matches: list[str],
     ) -> str:
+        if technical_matches and folder_profile_terms:
+            return "folder profile and technical hints overlap with query"
+        if entity_matches and time_matches:
+            return "entity term and time hint align with this folder"
+        if time_matches and folder_profile_terms:
+            return "folder profile and time hint overlap with query"
         if folder_path_terms and folder_profile_terms:
             return "folder path and profile strongly overlap with query topics"
         if sample_matches and folder_profile_terms:
             return "sample filenames and folder profile overlap with query"
+        if entity_matches and sample_matches:
+            return "entity term and sample filenames overlap with query"
         if folder_path_terms and sample_matches:
             return "folder path and sample filenames overlap with query"
         if folder_path_terms:
@@ -585,6 +733,66 @@ def _matched_values_and_terms(
     return _compact_list(matched_values, limit=4), _compact_list(matched_terms, limit=6)
 
 
+def _matched_hint_values(hints: Sequence[str], values: Sequence[str]) -> list[str]:
+    normalized_values = [_normalized_value(value) for value in values if str(value).strip()]
+    matches: list[str] = []
+    for hint in hints:
+        normalized_hint = _normalized_value(hint)
+        if not normalized_hint:
+            continue
+        if any(
+            normalized_hint == value
+            or normalized_hint in value
+            or value in normalized_hint
+            for value in normalized_values
+            if value
+        ):
+            matches.append(hint)
+    return _compact_list(matches, limit=4)
+
+
+def _matched_hint_terms(hints: Sequence[str], values: Sequence[str]) -> list[str]:
+    normalized_values = [_normalized_value(value) for value in values if str(value).strip()]
+    matches: list[str] = []
+    for hint in hints:
+        normalized_hint = _normalized_value(hint)
+        if not normalized_hint:
+            continue
+        hint_tokens = set(_meaningful_tokens(normalized_hint))
+        if any(
+            normalized_hint in value
+            or value in normalized_hint
+            or hint_tokens & set(_meaningful_tokens(value))
+            for value in normalized_values
+            if value
+        ):
+            matches.append(hint)
+    return _compact_list(matches, limit=4)
+
+
+def _matched_time_hints(hints: Sequence[str], values: Sequence[str]) -> list[str]:
+    normalized_values = [_normalized_value(value) for value in values if str(value).strip()]
+    matches: list[str] = []
+    for hint in hints:
+        normalized_hint = _normalized_value(hint)
+        if not normalized_hint:
+            continue
+        if normalized_hint.startswith("month:"):
+            month_value = normalized_hint.split(":", 1)[1]
+            month_number = _month_number(month_value)
+            if month_number and any(
+                re.search(rf"\b\d{{4}}[-/]{month_number}[-/]\d{{2}}\b", value)
+                or re.search(rf"\b{month_number}[-/]\d{{4}}\b", value)
+                for value in normalized_values
+            ):
+                matches.append(hint)
+            continue
+        comparable_hint = normalized_hint.split(":", 1)[-1] if ":" in normalized_hint else normalized_hint
+        if any(comparable_hint in value or value == comparable_hint for value in normalized_values):
+            matches.append(hint)
+    return _compact_list(matches, limit=4)
+
+
 def _add_source_terms(source_terms: dict[str, list[str]], source: str, terms: list[str]) -> None:
     compact_terms = _compact_list(terms, limit=6)
     if compact_terms:
@@ -604,11 +812,83 @@ def _note_from_matches(prefix: str, matches: Sequence[str]) -> str | None:
     return f"{prefix}: {', '.join(compact_matches)}"
 
 
+def _query_hint_bonus(
+    *,
+    kind_matches: Sequence[str],
+    topic_matches: Sequence[str],
+    technical_matches: Sequence[str],
+    entity_matches: Sequence[str],
+    time_matches: Sequence[str],
+    max_bonus: float = 0.14,
+) -> float:
+    bonus = 0.0
+    if kind_matches:
+        bonus += 0.03
+    if topic_matches:
+        bonus += 0.02
+    if technical_matches:
+        bonus += 0.04
+    if entity_matches:
+        bonus += 0.03
+    if time_matches:
+        bonus += 0.03
+    return round(min(max_bonus, bonus), 4)
+
+
+def _query_hint_bonus_note(
+    *,
+    kind_matches: Sequence[str],
+    topic_matches: Sequence[str],
+    technical_matches: Sequence[str],
+    entity_matches: Sequence[str],
+    time_matches: Sequence[str],
+) -> str | None:
+    bonus = _query_hint_bonus(
+        kind_matches=kind_matches,
+        topic_matches=topic_matches,
+        technical_matches=technical_matches,
+        entity_matches=entity_matches,
+        time_matches=time_matches,
+    )
+    if bonus <= 0.0:
+        return None
+    categories: list[str] = []
+    if kind_matches:
+        categories.append("kind")
+    if topic_matches:
+        categories.append("topic")
+    if technical_matches:
+        categories.append("technical")
+    if entity_matches:
+        categories.append("entity")
+    if time_matches:
+        categories.append("time")
+    return f"query hint bonus applied from {', '.join(categories)} alignment"
+
+
 def _normalized_value(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     normalized = normalized.lower()
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
+
+
+def _month_number(month_name: str) -> str | None:
+    months = {
+        "january": "01",
+        "february": "02",
+        "march": "03",
+        "april": "04",
+        "may": "05",
+        "june": "06",
+        "july": "07",
+        "august": "08",
+        "september": "09",
+        "october": "10",
+        "november": "11",
+        "december": "12",
+    }
+    return months.get(month_name)
 
 
 def _compact_list(values: list[str | None], limit: int) -> list[str]:
