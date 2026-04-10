@@ -8,6 +8,7 @@ from harbor_preindex.retrieval.query_hints import QueryHintExtractor
 from harbor_preindex.schemas import (
     FileSearchCandidate,
     FolderCard,
+    FolderSemanticSignature,
     RetrievalEvidence,
     RetrievalMatch,
     RetrievalQuery,
@@ -44,6 +45,11 @@ class StubCardBuilder:
             metadata={
                 "doc_count": candidate.doc_count,
                 "sample_filenames": candidate.sample_filenames,
+                "semantic_signature": (
+                    candidate.semantic_signature.to_dict()
+                    if candidate.semantic_signature is not None
+                    else None
+                ),
             },
         )
 
@@ -427,6 +433,71 @@ class HybridRetrievalCoreTests(unittest.TestCase):
             "time hint matched with no other strong hint; conservative adjustment applied",
             " ".join(response.matches[1].evidence.notes if response.matches[1].evidence else []),
         )
+
+    def test_folder_semantic_signature_disambiguates_shallow_lexical_overlap(self) -> None:
+        core = HybridRetrievalCore(
+            folder_retriever=StubFolderRetriever(
+                [
+                    SearchCandidate(
+                        project_id="music_max_tabs",
+                        path="/tmp/storage-root/music/max_tabs",
+                        name="max_tabs",
+                        parent="music",
+                        score=0.84,
+                        sample_filenames=["song.txt"],
+                        doc_count=6,
+                        text_profile="MAX folder with songs and lyrics",
+                        semantic_signature=FolderSemanticSignature(
+                            folder_role="leaf_specialized",
+                            dominant_topics=["tablature", "guitar", "lyrics"],
+                            dominant_entities=[],
+                            dominant_time_hints=[],
+                            dominant_kinds=["general_document"],
+                            frequent_extensions=[".txt"],
+                            representative_terms=["tablature", "guitar", "lyrics"],
+                            discriminative_terms=["tablature", "guitar", "lyrics"],
+                            notable_children=[],
+                            sample_filenames=["song.txt"],
+                        ),
+                    ),
+                    SearchCandidate(
+                        project_id="projects_max_dsp",
+                        path="/tmp/storage-root/projects/max_dsp_docs",
+                        name="max_dsp_docs",
+                        parent="projects",
+                        score=0.82,
+                        sample_filenames=["guide.txt"],
+                        doc_count=4,
+                        text_profile="MAX folder with DSP patch documentation",
+                        semantic_signature=FolderSemanticSignature(
+                            folder_role="leaf_specialized",
+                            dominant_topics=["dsp", "patch", "cycling74", "msp"],
+                            dominant_entities=["cycling74"],
+                            dominant_time_hints=[],
+                            dominant_kinds=["technical_document"],
+                            frequent_extensions=[".txt"],
+                            representative_terms=["dsp", "patch", "cycling74", "msp"],
+                            discriminative_terms=["dsp", "patch", "msp"],
+                            notable_children=[],
+                            sample_filenames=["guide.txt"],
+                        ),
+                    ),
+                ]
+            ),
+            file_retriever=None,
+            card_builder=StubCardBuilder(),
+        )
+
+        response = core.retrieve(RetrievalQuery(text="max dsp patch docs", limit=5), [0.1, 0.2])
+
+        self.assertEqual(response.matches[0].target_id, "projects_max_dsp")
+        self.assertEqual(
+            response.matches[0].why,
+            "folder semantic signature and profile overlap with query",
+        )
+        assert response.matches[0].evidence is not None
+        self.assertIn("folder_signature", response.matches[0].evidence.matched_sources)
+        self.assertIn("dsp", response.matches[0].evidence.source_terms["folder_signature"])
 
     def test_code_match_exposes_import_and_symbol_evidence(self) -> None:
         core = HybridRetrievalCore(

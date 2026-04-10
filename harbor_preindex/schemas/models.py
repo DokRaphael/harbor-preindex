@@ -8,9 +8,18 @@ from typing import Any, Literal, get_args
 
 TargetKind = Literal["file", "folder"]
 MatchType = Literal["exact_file", "likely_file", "folder_zone", "mixed", "no_match"]
+FolderRole = Literal[
+    "container",
+    "project_root",
+    "entity_bucket",
+    "time_bucket",
+    "leaf_specialized",
+    "mixed",
+]
 
 _VALID_TARGET_KINDS = set(get_args(TargetKind))
 _VALID_MATCH_TYPES = set(get_args(MatchType))
+_VALID_FOLDER_ROLES = set(get_args(FolderRole))
 
 
 @dataclass(slots=True)
@@ -61,6 +70,53 @@ class FolderCard:
             "text_for_embedding": self.text_for_embedding,
             "metadata": self.metadata,
         }
+
+
+@dataclass(slots=True)
+class FolderSemanticSignature:
+    """Compact semantic signature for an indexed destination folder."""
+
+    folder_role: FolderRole
+    dominant_topics: list[str] = field(default_factory=list)
+    dominant_entities: list[str] = field(default_factory=list)
+    dominant_time_hints: list[str] = field(default_factory=list)
+    dominant_kinds: list[str] = field(default_factory=list)
+    frequent_extensions: list[str] = field(default_factory=list)
+    representative_terms: list[str] = field(default_factory=list)
+    discriminative_terms: list[str] = field(default_factory=list)
+    notable_children: list[str] = field(default_factory=list)
+    sample_filenames: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.folder_role not in _VALID_FOLDER_ROLES:
+            raise ValueError(
+                f"unsupported folder_role={self.folder_role!r}; "
+                f"expected one of {sorted(_VALID_FOLDER_ROLES)}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "folder_role": self.folder_role,
+        }
+        if self.dominant_topics:
+            payload["dominant_topics"] = list(self.dominant_topics)
+        if self.dominant_entities:
+            payload["dominant_entities"] = list(self.dominant_entities)
+        if self.dominant_time_hints:
+            payload["dominant_time_hints"] = list(self.dominant_time_hints)
+        if self.dominant_kinds:
+            payload["dominant_kinds"] = list(self.dominant_kinds)
+        if self.frequent_extensions:
+            payload["frequent_extensions"] = list(self.frequent_extensions)
+        if self.representative_terms:
+            payload["representative_terms"] = list(self.representative_terms)
+        if self.discriminative_terms:
+            payload["discriminative_terms"] = list(self.discriminative_terms)
+        if self.notable_children:
+            payload["notable_children"] = list(self.notable_children)
+        if self.sample_filenames:
+            payload["sample_filenames"] = list(self.sample_filenames)
+        return payload
 
 
 @dataclass(slots=True)
@@ -250,9 +306,10 @@ class ProjectProfile:
     sample_filenames: list[str]
     doc_count: int
     text_profile: str
+    semantic_signature: FolderSemanticSignature | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "project_id": self.project_id,
             "path": self.path,
             "relative_path": self.relative_path,
@@ -262,6 +319,9 @@ class ProjectProfile:
             "doc_count": self.doc_count,
             "text_profile": self.text_profile,
         }
+        if self.semantic_signature is not None:
+            payload["semantic_signature"] = self.semantic_signature.to_dict()
+        return payload
 
 
 @dataclass(slots=True)
@@ -292,6 +352,9 @@ class SearchCandidate:
     sample_filenames: list[str]
     doc_count: int
     text_profile: str
+    semantic_signature: FolderSemanticSignature | None = None
+    raw_score: float | None = None
+    semantic_bonus: float = 0.0
 
     def to_result_dict(self) -> dict[str, Any]:
         return {
@@ -376,6 +439,11 @@ class BatchSummary:
     classified: int
     needs_review: int
     skipped: int
+    groups_total: int = 0
+    groups_existing_path: int = 0
+    groups_existing_subpath: int = 0
+    groups_proposed_new_subfolder: int = 0
+    groups_review_needed: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -384,6 +452,11 @@ class BatchSummary:
             "classified": self.classified,
             "needs_review": self.needs_review,
             "skipped": self.skipped,
+            "groups_total": self.groups_total,
+            "groups_existing_path": self.groups_existing_path,
+            "groups_existing_subpath": self.groups_existing_subpath,
+            "groups_proposed_new_subfolder": self.groups_proposed_new_subfolder,
+            "groups_review_needed": self.groups_review_needed,
         }
 
 
@@ -479,6 +552,77 @@ class BatchSkippedItem:
 
 
 @dataclass(slots=True)
+class BatchGroupSemantics:
+    """Compact semantic summary for a planned batch subset."""
+
+    dominant_topics: list[str] = field(default_factory=list)
+    dominant_entities: list[str] = field(default_factory=list)
+    dominant_time_hints: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if self.dominant_topics:
+            payload["dominant_topics"] = list(self.dominant_topics)
+        if self.dominant_entities:
+            payload["dominant_entities"] = list(self.dominant_entities)
+        if self.dominant_time_hints:
+            payload["dominant_time_hints"] = list(self.dominant_time_hints)
+        return payload
+
+
+@dataclass(slots=True)
+class BatchGroupDecision:
+    """Planned decision for a coherent batch subset."""
+
+    mode: str
+    selected_parent_path: str | None
+    selected_path: str | None
+    confidence: float
+    needs_review: bool
+    why: str
+    proposed_subfolder_name: str | None = None
+    proposed_full_path: str | None = None
+    naming_basis: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "mode": self.mode,
+            "selected_parent_path": self.selected_parent_path,
+            "selected_path": self.selected_path,
+            "confidence": round(self.confidence, 4),
+            "needs_review": self.needs_review,
+            "why": self.why,
+        }
+        if self.proposed_subfolder_name is not None:
+            payload["proposed_subfolder_name"] = self.proposed_subfolder_name
+        if self.proposed_full_path is not None:
+            payload["proposed_full_path"] = self.proposed_full_path
+        if self.naming_basis:
+            payload["naming_basis"] = dict(self.naming_basis)
+        return payload
+
+
+@dataclass(slots=True)
+class BatchPlacementGroup:
+    """Coherent planned subset for batch placement."""
+
+    group_id: str
+    member_count: int
+    members: list[str]
+    group_semantics: BatchGroupSemantics
+    decision: BatchGroupDecision
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "group_id": self.group_id,
+            "member_count": self.member_count,
+            "members": list(self.members),
+            "group_semantics": self.group_semantics.to_dict(),
+            "decision": self.decision.to_dict(),
+        }
+
+
+@dataclass(slots=True)
 class BatchQueryResult:
     """JSON-serializable placement plan for a batch of incoming files."""
 
@@ -490,6 +634,8 @@ class BatchQueryResult:
     review_queue: list[BatchReviewItem]
     skipped: list[BatchSkippedItem]
     generated_at: str
+    placement_groups: list[BatchPlacementGroup] = field(default_factory=list)
+    ungrouped_review_items: list[BatchReviewItem] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -499,6 +645,10 @@ class BatchQueryResult:
             "placements": [placement.to_dict() for placement in self.placements],
             "groups": [group.to_dict() for group in self.groups],
             "review_queue": [item.to_dict() for item in self.review_queue],
+            "placement_groups": [group.to_dict() for group in self.placement_groups],
+            "ungrouped_review_items": [
+                item.to_dict() for item in self.ungrouped_review_items
+            ],
             "skipped": [item.to_dict() for item in self.skipped],
             "generated_at": self.generated_at,
         }

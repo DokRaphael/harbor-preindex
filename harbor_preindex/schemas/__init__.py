@@ -2,7 +2,10 @@
 
 from harbor_preindex.schemas.models import (
     BatchGroup,
+    BatchGroupDecision,
+    BatchGroupSemantics,
     BatchPlacement,
+    BatchPlacementGroup,
     BatchQueryResult,
     BatchReviewItem,
     BatchSkippedItem,
@@ -13,6 +16,8 @@ from harbor_preindex.schemas.models import (
     FileQueryContext,
     FileSearchCandidate,
     FolderCard,
+    FolderRole,
+    FolderSemanticSignature,
     IndexBuildSummary,
     IndexedFileCard,
     IndexedProject,
@@ -30,7 +35,10 @@ from harbor_preindex.schemas.models import (
 
 __all__ = [
     "BatchGroup",
+    "BatchGroupDecision",
+    "BatchGroupSemantics",
     "BatchPlacement",
+    "BatchPlacementGroup",
     "BatchQueryResult",
     "BatchReviewItem",
     "BatchSkippedItem",
@@ -41,6 +49,8 @@ __all__ = [
     "FileQueryContext",
     "FileSearchCandidate",
     "FolderCard",
+    "FolderRole",
+    "FolderSemanticSignature",
     "IndexBuildSummary",
     "IndexedFileCard",
     "IndexedProject",

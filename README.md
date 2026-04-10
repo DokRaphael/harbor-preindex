@@ -83,7 +83,7 @@ In practice, the workflow looks like this:
 
 1. scan the storage root
 2. detect candidate project folders
-3. build a lightweight semantic profile for each folder
+3. build a lightweight semantic profile for each folder, including a compact folder semantic signature
 4. generate embeddings for those profiles
 5. store them in local Qdrant
 6. extract a signal from a new incoming file
@@ -153,6 +153,7 @@ It is about **preparing a filesystem for semantic retrieval and assisted organiz
 * crawl a local storage root
 * detect project folders with a simple heuristic
 * build a lightweight text profile per folder
+* build a compact folder semantic signature from sampled child files, extensions, and dominant semantic hints
 * build a lightweight semantic card per supported file
 * enrich file signals with semantic hints before building file cards
 * generate embeddings in batches
@@ -364,8 +365,9 @@ harbor-preindex query-file /tmp/incoming/contract_dupont.pdf
 harbor-preindex query-batch /tmp/incoming_dump
 ```
 
-`query-batch` scans a directory recursively by default, reuses the incoming-file placement pipeline on each supported file, and proposes a placement plan with grouped suggested destinations.
-It does not move files.
+`query-batch` scans a directory recursively by default, reuses the incoming-file placement pipeline on each supported file, and acts as a lightweight placement planner.
+It can keep a coherent subset on an existing path, split heterogeneous batches, or propose a new subfolder under a plausible parent when no existing specialized child path is strong enough.
+It does not move files or create directories.
 
 ### Query the retrieval core
 
@@ -426,6 +428,7 @@ This adds extra fields such as:
 
 * per-file extracted query profiles
 * candidate folder `text_profile` values for each processed file
+* candidate folder semantic signature fields such as `folder_role`, dominant hints, and discriminative terms
 
 ---
 
