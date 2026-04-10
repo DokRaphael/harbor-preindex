@@ -87,6 +87,7 @@ class StubSignalExtractor:
     def extract(self, file_path: Path) -> ExtractedSignal:
         if file_path.name in self.broken_names:
             raise OSError("unable to read file")
+        excerpt = file_path.read_text(encoding="utf-8")
         return ExtractedSignal(
             modality="document",
             text_for_embedding=f"Incoming file name: {file_path.name}",
@@ -95,7 +96,7 @@ class StubSignalExtractor:
                 "file_name": file_path.name,
                 "suffix": file_path.suffix.lower(),
                 "parent": file_path.parent.name,
-                "text_excerpt": f"Excerpt for {file_path.stem}",
+                "text_excerpt": excerpt,
             },
             confidence=0.9,
         )
@@ -135,7 +136,11 @@ class StubEmbeddingBackend:
 class StubRetriever:
     def retrieve(self, query_vector: list[str], limit: int) -> list[SearchCandidate]:
         text = query_vector[0]
-        if "amazon_jan_2025" in text or "amazon_feb_2025" in text:
+        if (
+            "amazon_jan_2025" in text
+            or "amazon_feb_2025" in text
+            or "amazon_mar_2025" in text
+        ):
             return [
                 SearchCandidate(
                     project_id="amazon_invoices",
@@ -160,6 +165,28 @@ class StubRetriever:
                     ),
                 ),
                 SearchCandidate(
+                    project_id="invoices_parent",
+                    path="/nas/admin/invoices",
+                    name="invoices",
+                    parent="admin",
+                    score=0.74,
+                    sample_filenames=["invoice_index.txt"],
+                    doc_count=18,
+                    text_profile="Administrative invoices parent folder",
+                    semantic_signature=FolderSemanticSignature(
+                        folder_role="container",
+                        dominant_topics=["invoice", "receipt"],
+                        dominant_entities=[],
+                        dominant_time_hints=[],
+                        dominant_kinds=["transactional_document"],
+                        frequent_extensions=[".txt"],
+                        representative_terms=["invoice", "receipt", "billing"],
+                        discriminative_terms=["billing"],
+                        notable_children=["amazon", "utilities"],
+                        sample_filenames=["invoice_index.txt"],
+                    ),
+                ),
+                SearchCandidate(
                     project_id="personal_misc",
                     path="/nas/admin/personal",
                     name="personal",
@@ -168,6 +195,96 @@ class StubRetriever:
                     sample_filenames=["note.txt"],
                     doc_count=12,
                     text_profile="Personal notes and misc files",
+                ),
+            ][:limit]
+        if "edf_2024" in text:
+            return [
+                SearchCandidate(
+                    project_id="utilities_archive",
+                    path="/nas/admin/invoices/utilities_archive",
+                    name="utilities_archive",
+                    parent="invoices",
+                    score=0.63,
+                    sample_filenames=["utility_2023.pdf"],
+                    doc_count=6,
+                    text_profile="Utility invoices archive",
+                    semantic_signature=FolderSemanticSignature(
+                        folder_role="leaf_specialized",
+                        dominant_topics=["invoice", "utility"],
+                        dominant_entities=[],
+                        dominant_time_hints=["2023"],
+                        dominant_kinds=["transactional_document"],
+                        frequent_extensions=[".pdf"],
+                        representative_terms=["utility", "invoice"],
+                        discriminative_terms=["utility", "billing"],
+                        notable_children=[],
+                        sample_filenames=["utility_2023.pdf"],
+                    ),
+                ),
+                SearchCandidate(
+                    project_id="amazon_invoices",
+                    path="/nas/admin/invoices/amazon",
+                    name="amazon",
+                    parent="invoices",
+                    score=0.61,
+                    sample_filenames=["amazon_invoice_2025.txt"],
+                    doc_count=8,
+                    text_profile="Amazon invoices and receipts",
+                ),
+                SearchCandidate(
+                    project_id="telecom_invoices",
+                    path="/nas/admin/invoices/telecom",
+                    name="telecom",
+                    parent="invoices",
+                    score=0.58,
+                    sample_filenames=["orange_2024.pdf"],
+                    doc_count=5,
+                    text_profile="Telecom invoices",
+                ),
+            ][:limit]
+        if "orange_fev_2025" in text:
+            return [
+                SearchCandidate(
+                    project_id="telecom_invoices",
+                    path="/nas/admin/invoices/telecom",
+                    name="telecom",
+                    parent="invoices",
+                    score=0.64,
+                    sample_filenames=["orange_2024.pdf"],
+                    doc_count=5,
+                    text_profile="Telecom invoices",
+                    semantic_signature=FolderSemanticSignature(
+                        folder_role="leaf_specialized",
+                        dominant_topics=["invoice", "telecom"],
+                        dominant_entities=["orange"],
+                        dominant_time_hints=["2024"],
+                        dominant_kinds=["transactional_document"],
+                        frequent_extensions=[".pdf"],
+                        representative_terms=["orange", "telecom", "invoice"],
+                        discriminative_terms=["orange", "telecom"],
+                        notable_children=[],
+                        sample_filenames=["orange_2024.pdf"],
+                    ),
+                ),
+                SearchCandidate(
+                    project_id="amazon_invoices",
+                    path="/nas/admin/invoices/amazon",
+                    name="amazon",
+                    parent="invoices",
+                    score=0.6,
+                    sample_filenames=["amazon_invoice_2025.txt"],
+                    doc_count=8,
+                    text_profile="Amazon invoices and receipts",
+                ),
+                SearchCandidate(
+                    project_id="utilities_archive",
+                    path="/nas/admin/invoices/utilities_archive",
+                    name="utilities_archive",
+                    parent="invoices",
+                    score=0.57,
+                    sample_filenames=["utility_2023.pdf"],
+                    doc_count=6,
+                    text_profile="Utility invoices archive",
                 ),
             ][:limit]
         if "notes" in text:
@@ -188,6 +305,29 @@ class StubRetriever:
                     name="personal",
                     parent="admin",
                     score=0.58,
+                    sample_filenames=["note.txt"],
+                    doc_count=12,
+                    text_profile="Personal notes and misc files",
+                ),
+            ][:limit]
+        if "random_note" in text:
+            return [
+                SearchCandidate(
+                    project_id="project_docs",
+                    path="/nas/projects/docs",
+                    name="docs",
+                    parent="projects",
+                    score=0.57,
+                    sample_filenames=["overview.md"],
+                    doc_count=4,
+                    text_profile="Project documentation and notes",
+                ),
+                SearchCandidate(
+                    project_id="personal_misc",
+                    path="/nas/admin/personal",
+                    name="personal",
+                    parent="admin",
+                    score=0.55,
                     sample_filenames=["note.txt"],
                     doc_count=12,
                     text_profile="Personal notes and misc files",
@@ -215,7 +355,13 @@ class StubDecisionEngine:
         query: FileQueryContext,
         candidates: list[SearchCandidate],
     ) -> Decision:
-        if query.file_name in {"amazon_jan_2025.txt", "amazon_feb_2025.txt", "nested.txt", "single.txt"}:
+        if query.file_name in {
+            "amazon_jan_2025.txt",
+            "amazon_feb_2025.txt",
+            "amazon_mar_2025.txt",
+            "nested.txt",
+            "single.txt",
+        }:
             top_candidate = candidates[0]
             return Decision(
                 selected_project_id=top_candidate.project_id,
@@ -229,6 +375,14 @@ class StubDecisionEngine:
                 selected_project_id=None,
                 selected_path=None,
                 confidence=0.58,
+                mode="review_needed",
+                reason="ambiguous_match",
+            )
+        if query.file_name in {"edf_2024.txt", "orange_fev_2025.txt", "random_note.txt", "scan_001.pdf"}:
+            return Decision(
+                selected_project_id=None,
+                selected_path=None,
+                confidence=0.62 if query.file_name != "scan_001.pdf" else 0.35,
                 mode="review_needed",
                 reason="ambiguous_match",
             )
@@ -327,6 +481,11 @@ class BatchQueryTests(unittest.TestCase):
             "classified": 2,
             "needs_review": 1,
             "skipped": 1,
+            "groups_total": 1,
+            "groups_existing_path": 0,
+            "groups_existing_subpath": 1,
+            "groups_proposed_new_subfolder": 0,
+            "groups_review_needed": 0,
         })
         self.assertEqual(len(result.placements), 3)
         self.assertEqual(result.groups[0].suggested_target_path, "/nas/admin/invoices/amazon")
@@ -343,6 +502,21 @@ class BatchQueryTests(unittest.TestCase):
         self.assertEqual(len(result.review_queue), 1)
         self.assertEqual(result.review_queue[0].source_path, str(batch_dir / "notes.txt"))
         self.assertEqual(result.skipped[0].reason, "unsupported_extension")
+        self.assertEqual(len(result.placement_groups), 1)
+        self.assertEqual(result.placement_groups[0].decision.mode, "existing_subpath")
+        self.assertEqual(
+            result.placement_groups[0].decision.selected_parent_path,
+            "/nas/admin/invoices",
+        )
+        self.assertEqual(
+            result.placement_groups[0].decision.selected_path,
+            "/nas/admin/invoices/amazon",
+        )
+        self.assertEqual(len(result.ungrouped_review_items), 1)
+        self.assertEqual(
+            result.ungrouped_review_items[0].source_path,
+            str(batch_dir / "notes.txt"),
+        )
         self.assertEqual(self.result_store.save_batch_calls, 1)
         self.assertEqual(self.result_store.save_query_calls, 0)
         self.assertEqual(self.audit_store.batch_query_calls, 1)
@@ -388,6 +562,11 @@ class BatchQueryTests(unittest.TestCase):
             "classified": 1,
             "needs_review": 0,
             "skipped": 0,
+            "groups_total": 1,
+            "groups_existing_path": 0,
+            "groups_existing_subpath": 1,
+            "groups_proposed_new_subfolder": 0,
+            "groups_review_needed": 0,
         })
         self.assertEqual(len(result.placements), 1)
         self.assertEqual(result.placements[0].source_path, str(input_file))
@@ -423,6 +602,63 @@ class BatchQueryTests(unittest.TestCase):
         self.assertIn("candidate_text_profiles", payload["placements"][0]["debug"])
         self.assertIn("semantic_signature", payload["placements"][0]["debug"]["candidate_text_profiles"][0])
         self.assertIn("debug", payload["review_queue"][0])
+
+    def test_query_batch_homogeneous_batch_plans_existing_subpath_group(self) -> None:
+        batch_dir = self.base_path / "incoming"
+        self._write_text(batch_dir / "amazon_jan_2025.txt", "amazon january invoice")
+        self._write_text(batch_dir / "amazon_feb_2025.txt", "amazon february invoice")
+        self._write_text(batch_dir / "amazon_mar_2025.txt", "amazon march invoice")
+
+        result = self.app.query_batch(batch_dir)
+
+        self.assertEqual(len(result.placement_groups), 1)
+        group = result.placement_groups[0]
+        self.assertEqual(group.member_count, 3)
+        self.assertEqual(group.decision.mode, "existing_subpath")
+        self.assertEqual(group.decision.selected_parent_path, "/nas/admin/invoices")
+        self.assertEqual(group.decision.selected_path, "/nas/admin/invoices/amazon")
+        self.assertEqual(group.group_semantics.dominant_entities, ["amazon"])
+
+    def test_query_batch_heterogeneous_utilities_split_into_proposed_subfolders(self) -> None:
+        batch_dir = self.base_path / "incoming"
+        self._write_text(batch_dir / "edf_2024.txt", "edf utility invoice 2024")
+        self._write_text(batch_dir / "orange_fev_2025.txt", "orange telecom invoice february 2025")
+
+        result = self.app.query_batch(batch_dir)
+
+        self.assertEqual(len(result.placement_groups), 2)
+        self.assertEqual(
+            [group.decision.mode for group in result.placement_groups],
+            ["proposed_new_subfolder", "proposed_new_subfolder"],
+        )
+        self.assertEqual(
+            [group.decision.selected_parent_path for group in result.placement_groups],
+            ["/nas/admin/invoices", "/nas/admin/invoices"],
+        )
+        self.assertEqual(
+            [group.decision.proposed_subfolder_name for group in result.placement_groups],
+            ["edf_2024", "orange_2025"],
+        )
+        self.assertEqual(result.summary.groups_proposed_new_subfolder, 2)
+        for group in result.placement_groups:
+            self.assertFalse(Path(group.decision.proposed_full_path or "").exists())
+
+    def test_query_batch_does_not_force_weakly_related_files_into_one_group(self) -> None:
+        batch_dir = self.base_path / "incoming"
+        self._write_text(batch_dir / "random_note.txt", "random notes about many things")
+        self._write_text(batch_dir / "scan_001.pdf", "scan without a clear home")
+
+        result = self.app.query_batch(batch_dir)
+
+        self.assertEqual(len(result.placement_groups), 0)
+        self.assertEqual(len(result.ungrouped_review_items), 2)
+        self.assertEqual(
+            [item.source_path for item in result.ungrouped_review_items],
+            [
+                str(batch_dir / "random_note.txt"),
+                str(batch_dir / "scan_001.pdf"),
+            ],
+        )
 
     def test_reviewed_items_are_not_grouped_as_classified_destinations(self) -> None:
         batch_dir = self.base_path / "incoming"

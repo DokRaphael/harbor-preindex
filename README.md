@@ -365,8 +365,9 @@ harbor-preindex query-file /tmp/incoming/contract_dupont.pdf
 harbor-preindex query-batch /tmp/incoming_dump
 ```
 
-`query-batch` scans a directory recursively by default, reuses the incoming-file placement pipeline on each supported file, and proposes a placement plan with grouped suggested destinations.
-It does not move files.
+`query-batch` scans a directory recursively by default, reuses the incoming-file placement pipeline on each supported file, and acts as a lightweight placement planner.
+It can keep a coherent subset on an existing path, split heterogeneous batches, or propose a new subfolder under a plausible parent when no existing specialized child path is strong enough.
+It does not move files or create directories.
 
 ### Query the retrieval core
 

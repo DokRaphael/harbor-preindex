@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -17,6 +17,7 @@ from harbor_preindex.logging_config import configure_logging, get_logger
 from harbor_preindex.profiling import ContentExtractor, ProjectProfileBuilder
 from harbor_preindex.profiling.folder_semantics import FolderSemanticSignatureBuilder
 from harbor_preindex.retrieval.cards import RetrievalCardBuilder
+from harbor_preindex.retrieval.batch_planner import BatchPlanningInput, plan_batch_placements
 from harbor_preindex.retrieval.core import HybridRetrievalCore
 from harbor_preindex.retrieval.folder_semantics import rerank_folder_candidates
 from harbor_preindex.retrieval.query_hints import QueryHintExtractor
@@ -576,6 +577,7 @@ class HarborPreindexApp:
         placements: list[BatchPlacement] = []
         review_queue: list[BatchReviewItem] = []
         debug_map: dict[str, dict[str, Any]] = {}
+        planning_inputs: list[BatchPlanningInput] = []
 
         for file_path in supported_paths:
             try:
@@ -600,6 +602,19 @@ class HarborPreindexApp:
 
             placement = self._build_batch_placement(result)
             placements.append(placement)
+            planning_inputs.append(
+                BatchPlanningInput(
+                    result=result,
+                    query_context=query_context,
+                    query_hints=self.query_hint_extractor.extract(
+                        " ".join(
+                            part
+                            for part in [query_context.file_name, query_context.text_excerpt]
+                            if part
+                        )
+                    ),
+                )
+            )
             if placement.needs_review:
                 review_queue.append(
                     BatchReviewItem(
@@ -616,12 +631,21 @@ class HarborPreindexApp:
             )
 
         groups = self._group_batch_placements(placements)
+        planning_result = plan_batch_placements(planning_inputs)
+        group_mode_counts = Counter(
+            group.decision.mode for group in planning_result.placement_groups
+        )
         summary = BatchSummary(
             scanned_files=scanned_files,
             supported_files=len(supported_paths),
             classified=sum(1 for placement in placements if not placement.needs_review),
             needs_review=sum(1 for placement in placements if placement.needs_review),
             skipped=len(skipped),
+            groups_total=len(planning_result.placement_groups),
+            groups_existing_path=group_mode_counts.get("existing_path", 0),
+            groups_existing_subpath=group_mode_counts.get("existing_subpath", 0),
+            groups_proposed_new_subfolder=group_mode_counts.get("proposed_new_subfolder", 0),
+            groups_review_needed=group_mode_counts.get("review_needed", 0),
         )
         batch_result = BatchQueryResult(
             input_path=str(input_path),
@@ -630,6 +654,8 @@ class HarborPreindexApp:
             placements=placements,
             groups=groups,
             review_queue=review_queue,
+            placement_groups=planning_result.placement_groups,
+            ungrouped_review_items=planning_result.ungrouped_review_items,
             skipped=skipped,
             generated_at=utc_now_iso(),
         )
@@ -647,6 +673,8 @@ class HarborPreindexApp:
                 "needs_review": summary.needs_review,
                 "skipped": summary.skipped,
                 "group_count": len(groups),
+                "placement_group_count": summary.groups_total,
+                "proposed_new_subfolder_groups": summary.groups_proposed_new_subfolder,
             },
         )
         return batch_result, debug_map
