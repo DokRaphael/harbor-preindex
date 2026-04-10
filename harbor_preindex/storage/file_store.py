@@ -23,17 +23,17 @@ class JsonResultStore:
 
     def save_query_result(self, result: QueryResult) -> Path:
         stem = slugify(Path(result.input_file).stem)
-        filename = f"query_{utc_now_compact()}_{stem}.json"
+        filename = f"query_{utc_now_compact()}_{result.result_id}_{stem}.json"
         return self._write(filename, result.to_dict())
 
     def save_batch_query_result(self, result: BatchQueryResult) -> Path:
         stem = slugify(Path(result.input_path).name or "batch")
-        filename = f"batch_query_{utc_now_compact()}_{stem}.json"
+        filename = f"batch_query_{utc_now_compact()}_{result.result_id}_{stem}.json"
         return self._write(filename, result.to_dict())
 
     def save_retrieval_response(self, response: RetrievalResponse) -> Path:
         stem = slugify(response.query)
-        filename = f"retrieval_{utc_now_compact()}_{stem}.json"
+        filename = f"retrieval_{utc_now_compact()}_{response.result_id}_{stem}.json"
         return self._write(filename, response.to_dict())
 
     def _write(self, filename: str, payload: dict[str, Any]) -> Path:

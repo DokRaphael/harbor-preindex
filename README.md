@@ -380,6 +380,7 @@ Example output:
 ```json
 {
   "query": "where is my resume?",
+  "result_id": "retrieval_6fbb5f7844c2",
   "match_type": "likely_file",
   "confidence": 0.87,
   "needs_review": false,
@@ -404,6 +405,18 @@ Example output:
   "generated_at": "2026-04-06T00:00:00Z"
 }
 ```
+
+### Record lightweight feedback
+
+```bash
+harbor-preindex feedback mark-good query_file_6fbb5f7844c2
+harbor-preindex feedback mark-bad query_batch_9b2d6ad3e8aa --reason should_have_split
+harbor-preindex feedback correct retrieval_1fdb75cc9057 --path /data/storage-root/admin/invoices/edf_2024 --reason wrong_path
+```
+
+Query results now include a traceable `result_id`.
+Feedback events are stored locally for evaluation and future Harbor review loops.
+They do not retrain the system, move files, or create directories.
 
 ### Optional debug mode
 
