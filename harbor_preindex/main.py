@@ -35,6 +35,7 @@ from harbor_preindex.schemas import (
     BatchSkippedItem,
     BatchSummary,
     DiscoveredProject,
+    FeedbackRecord,
     FileCard,
     FileQueryContext,
     IndexBuildSummary,
@@ -522,6 +523,55 @@ class HarborPreindexApp:
         )
         return response
 
+    def record_feedback(
+        self,
+        result_id: str,
+        *,
+        feedback_status: str,
+        feedback_reason: str,
+        corrected_path: str | None = None,
+        corrected_parent_path: str | None = None,
+        notes: str | None = None,
+    ) -> FeedbackRecord:
+        """Persist a compact human feedback event for a stored result."""
+
+        source = self.audit_store.lookup_feedback_source(result_id)
+        if source is None:
+            raise ValueError(f"unknown result_id: {result_id}")
+
+        normalized_corrected_path = _normalize_optional_path(corrected_path)
+        normalized_corrected_parent = _normalize_optional_path(corrected_parent_path)
+        if normalized_corrected_parent is None and normalized_corrected_path is not None:
+            normalized_corrected_parent = _path_parent(normalized_corrected_path)
+
+        feedback = FeedbackRecord(
+            source_result_id=result_id,
+            query_kind=source.query_kind,
+            feedback_status=feedback_status,
+            feedback_reason=feedback_reason,
+            corrected_path=normalized_corrected_path,
+            corrected_parent_path=normalized_corrected_parent,
+            notes=(notes.strip() if notes and notes.strip() else None),
+            system_mode=source.system_mode,
+            system_selected_path=source.system_selected_path,
+            system_parent_path=source.system_parent_path,
+            system_confidence=source.system_confidence,
+            system_needs_review=source.system_needs_review,
+            created_at=utc_now_iso(),
+        )
+        self.audit_store.record_feedback(feedback)
+        logger.info(
+            "feedback_recorded",
+            extra={
+                "feedback_id": feedback.feedback_id,
+                "source_result_id": feedback.source_result_id,
+                "query_kind": feedback.query_kind,
+                "feedback_status": feedback.feedback_status,
+                "feedback_reason": feedback.feedback_reason,
+            },
+        )
+        return feedback
+
     def _run_query(
         self,
         file_path: Path,
@@ -931,3 +981,21 @@ def create_application() -> HarborPreindexApp:
 
     settings = load_settings()
     return HarborPreindexApp.from_settings(settings)
+
+
+def _normalize_optional_path(path_value: str | None) -> str | None:
+    if path_value is None:
+        return None
+    text = str(path_value).strip()
+    if not text:
+        return None
+    return str(Path(text))
+
+
+def _path_parent(path_value: str | None) -> str | None:
+    if not path_value:
+        return None
+    path = Path(path_value)
+    if path.parent == path:
+        return path_value
+    return str(path.parent)

@@ -11,6 +11,20 @@ from pathlib import Path
 
 from harbor_preindex import __version__
 
+FEEDBACK_REASON_CHOICES = (
+    "correct_match",
+    "wrong_path",
+    "wrong_parent",
+    "should_have_split",
+    "should_not_have_split",
+    "review_was_correct",
+    "review_was_unnecessary",
+    "bad_new_subfolder_proposal",
+    "good_new_subfolder_proposal_bad_name",
+    "ambiguous",
+    "other",
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Create the root CLI parser."""
@@ -76,6 +90,67 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include structured retrieval evidence in the output",
     )
 
+    feedback_parser = subparsers.add_parser(
+        "feedback", help="Record lightweight human feedback for a persisted result"
+    )
+    feedback_subparsers = feedback_parser.add_subparsers(dest="feedback_command")
+
+    mark_good_parser = feedback_subparsers.add_parser(
+        "mark-good", help="Record a good result"
+    )
+    mark_good_parser.add_argument("result_id", help="Persisted result identifier")
+    mark_good_parser.add_argument(
+        "--reason",
+        choices=FEEDBACK_REASON_CHOICES,
+        default="correct_match",
+        help="Bounded reason for the feedback event",
+    )
+    mark_good_parser.add_argument(
+        "--notes",
+        default=None,
+        help="Optional short human note",
+    )
+
+    mark_bad_parser = feedback_subparsers.add_parser("mark-bad", help="Record a bad result")
+    mark_bad_parser.add_argument("result_id", help="Persisted result identifier")
+    mark_bad_parser.add_argument(
+        "--reason",
+        choices=FEEDBACK_REASON_CHOICES,
+        required=True,
+        help="Bounded reason for the feedback event",
+    )
+    mark_bad_parser.add_argument(
+        "--notes",
+        default=None,
+        help="Optional short human note",
+    )
+
+    correct_parser = feedback_subparsers.add_parser(
+        "correct", help="Record a corrected destination for a result"
+    )
+    correct_parser.add_argument("result_id", help="Persisted result identifier")
+    correct_parser.add_argument(
+        "--path",
+        required=True,
+        help="Corrected destination path",
+    )
+    correct_parser.add_argument(
+        "--parent-path",
+        default=None,
+        help="Corrected parent path when useful",
+    )
+    correct_parser.add_argument(
+        "--reason",
+        choices=FEEDBACK_REASON_CHOICES,
+        required=True,
+        help="Bounded reason for the feedback event",
+    )
+    correct_parser.add_argument(
+        "--notes",
+        default=None,
+        help="Optional short human note",
+    )
+
     subparsers.add_parser("health-check", help="Check local dependencies and configuration")
 
     return parser
@@ -122,6 +197,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = app.query(args.text, top_k=args.top_k).to_dict(
                 include_evidence=bool(args.debug_evidence)
             )
+        elif args.command == "feedback":
+            if not args.feedback_command:
+                parser.print_help()
+                return 1
+            if args.feedback_command == "mark-good":
+                payload = app.record_feedback(
+                    args.result_id,
+                    feedback_status="good",
+                    feedback_reason=args.reason,
+                    notes=args.notes,
+                ).to_dict()
+            elif args.feedback_command == "mark-bad":
+                payload = app.record_feedback(
+                    args.result_id,
+                    feedback_status="bad",
+                    feedback_reason=args.reason,
+                    notes=args.notes,
+                ).to_dict()
+            elif args.feedback_command == "correct":
+                payload = app.record_feedback(
+                    args.result_id,
+                    feedback_status="corrected",
+                    feedback_reason=args.reason,
+                    corrected_path=args.path,
+                    corrected_parent_path=args.parent_path,
+                    notes=args.notes,
+                ).to_dict()
+            else:
+                parser.print_help()
+                return 1
         elif args.command == "health-check":
             payload = app.health_check()
         else:

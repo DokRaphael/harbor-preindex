@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, get_args
+from uuid import uuid4
 
 TargetKind = Literal["file", "folder"]
 MatchType = Literal["exact_file", "likely_file", "folder_zone", "mixed", "no_match"]
@@ -16,10 +17,32 @@ FolderRole = Literal[
     "leaf_specialized",
     "mixed",
 ]
+QueryKind = Literal["query_file", "query_batch", "query"]
+FeedbackStatus = Literal["good", "bad", "corrected"]
+FeedbackReason = Literal[
+    "correct_match",
+    "wrong_path",
+    "wrong_parent",
+    "should_have_split",
+    "should_not_have_split",
+    "review_was_correct",
+    "review_was_unnecessary",
+    "bad_new_subfolder_proposal",
+    "good_new_subfolder_proposal_bad_name",
+    "ambiguous",
+    "other",
+]
 
 _VALID_TARGET_KINDS = set(get_args(TargetKind))
 _VALID_MATCH_TYPES = set(get_args(MatchType))
 _VALID_FOLDER_ROLES = set(get_args(FolderRole))
+_VALID_QUERY_KINDS = set(get_args(QueryKind))
+_VALID_FEEDBACK_STATUSES = set(get_args(FeedbackStatus))
+_VALID_FEEDBACK_REASONS = set(get_args(FeedbackReason))
+
+
+def _generate_result_id(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex[:12]}"
 
 
 @dataclass(slots=True)
@@ -262,6 +285,7 @@ class RetrievalResponse:
     needs_review: bool
     generated_at: str
     query_hints: StructuredQueryHints | None = None
+    result_id: str = field(default_factory=lambda: _generate_result_id("retrieval"))
 
     def __post_init__(self) -> None:
         if self.match_type not in _VALID_MATCH_TYPES:
@@ -273,6 +297,7 @@ class RetrievalResponse:
     def to_dict(self, include_evidence: bool = False) -> dict[str, Any]:
         payload = {
             "query": self.query,
+            "result_id": self.result_id,
             "match_type": self.match_type,
             "confidence": round(self.confidence, 4),
             "needs_review": self.needs_review,
@@ -420,10 +445,12 @@ class QueryResult:
     top_candidates: list[SearchCandidate]
     decision: Decision
     generated_at: str
+    result_id: str = field(default_factory=lambda: _generate_result_id("query_file"))
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "input_file": self.input_file,
+            "result_id": self.result_id,
             "top_candidates": [candidate.to_result_dict() for candidate in self.top_candidates],
             "decision": self.decision.to_dict(),
             "generated_at": self.generated_at,
@@ -634,12 +661,14 @@ class BatchQueryResult:
     review_queue: list[BatchReviewItem]
     skipped: list[BatchSkippedItem]
     generated_at: str
+    result_id: str = field(default_factory=lambda: _generate_result_id("query_batch"))
     placement_groups: list[BatchPlacementGroup] = field(default_factory=list)
     ungrouped_review_items: list[BatchReviewItem] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "input_path": self.input_path,
+            "result_id": self.result_id,
             "mode": self.mode,
             "summary": self.summary.to_dict(),
             "placements": [placement.to_dict() for placement in self.placements],
@@ -652,6 +681,89 @@ class BatchQueryResult:
             "skipped": [item.to_dict() for item in self.skipped],
             "generated_at": self.generated_at,
         }
+
+
+@dataclass(slots=True)
+class FeedbackSourceResult:
+    """Minimal stored system decision context used for feedback capture."""
+
+    result_id: str
+    query_kind: QueryKind
+    system_mode: str
+    system_selected_path: str | None
+    system_parent_path: str | None
+    system_confidence: float
+    system_needs_review: bool
+
+
+@dataclass(slots=True)
+class FeedbackRecord:
+    """Structured human feedback event stored alongside local results."""
+
+    source_result_id: str
+    query_kind: QueryKind
+    feedback_status: FeedbackStatus
+    feedback_reason: FeedbackReason
+    created_at: str
+    feedback_id: str = field(default_factory=lambda: _generate_result_id("feedback"))
+    corrected_path: str | None = None
+    corrected_parent_path: str | None = None
+    notes: str | None = None
+    system_mode: str | None = None
+    system_selected_path: str | None = None
+    system_parent_path: str | None = None
+    system_confidence: float | None = None
+    system_needs_review: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.query_kind not in _VALID_QUERY_KINDS:
+            raise ValueError(
+                f"unsupported query_kind={self.query_kind!r}; "
+                f"expected one of {sorted(_VALID_QUERY_KINDS)}"
+            )
+        if self.feedback_status not in _VALID_FEEDBACK_STATUSES:
+            raise ValueError(
+                f"unsupported feedback_status={self.feedback_status!r}; "
+                f"expected one of {sorted(_VALID_FEEDBACK_STATUSES)}"
+            )
+        if self.feedback_reason not in _VALID_FEEDBACK_REASONS:
+            raise ValueError(
+                f"unsupported feedback_reason={self.feedback_reason!r}; "
+                f"expected one of {sorted(_VALID_FEEDBACK_REASONS)}"
+            )
+        if self.feedback_status == "corrected" and not (
+            self.corrected_path or self.corrected_parent_path
+        ):
+            raise ValueError(
+                "corrected feedback requires corrected_path or corrected_parent_path"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "feedback_id": self.feedback_id,
+            "source_result_id": self.source_result_id,
+            "query_kind": self.query_kind,
+            "feedback_status": self.feedback_status,
+            "feedback_reason": self.feedback_reason,
+            "created_at": self.created_at,
+        }
+        if self.corrected_path is not None:
+            payload["corrected_path"] = self.corrected_path
+        if self.corrected_parent_path is not None:
+            payload["corrected_parent_path"] = self.corrected_parent_path
+        if self.notes:
+            payload["notes"] = self.notes
+        if self.system_mode is not None:
+            payload["system_mode"] = self.system_mode
+        if self.system_selected_path is not None:
+            payload["system_selected_path"] = self.system_selected_path
+        if self.system_parent_path is not None:
+            payload["system_parent_path"] = self.system_parent_path
+        if self.system_confidence is not None:
+            payload["system_confidence"] = round(self.system_confidence, 4)
+        if self.system_needs_review is not None:
+            payload["system_needs_review"] = self.system_needs_review
+        return payload
 
 
 @dataclass(slots=True)
